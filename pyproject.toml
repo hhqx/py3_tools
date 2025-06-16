@@ -28,6 +28,7 @@ dev = [
     "black",
     "flake8",
     "mypy",
+    'build'
 ]
 py_debug = [
     "web-pdb",

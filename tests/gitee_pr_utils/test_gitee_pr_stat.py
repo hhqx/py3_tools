@@ -7,7 +7,7 @@ from unittest import mock
 
 import requests
 
-from py_tools.gitee_pr_utils.gitee_pr_stat import GiteePRConfig, GiteePRClient
+from py_tools.gitees.gitee_pr_stat import GiteePRConfig, GiteePRClient
 
 
 class TestGiteePRClient(unittest.TestCase):
