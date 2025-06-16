@@ -1,10 +1,10 @@
-# py_tools
+# py3_tools
 
 个人常用 Python 工具集，包含调试、数据处理等实用模块。
 
 ## 目录结构
 
-- `src/py_tools/`：主代码
+- `src/py3_tools/`：主代码
 - `examples/`：用例
 - `tests/`：测试
 

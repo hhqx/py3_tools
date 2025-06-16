@@ -4,15 +4,15 @@
 
 ## Install
 ```shell
-git clone https://github.com/hhhqx/py_tools.git
-cd py_tools
+git clone https://github.com/hhhqx/py3_tools.git
+cd py3_tools
 pip install .[gitee]
 ```
 
 ## 快速开始
 以下命令展示了如何使用工具查询 PR 数据并导出结果：
 ```shell
-python -m py_tools.gitee_pr_utils.gitee_pr_stat \
+python -m py3_tools.gitee_pr_utils.gitee_pr_stat \
     --owner ascend --repo msit --author hhhqx \
     --state all \
     --since "2025-01-01" \

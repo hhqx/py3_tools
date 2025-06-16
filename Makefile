@@ -20,7 +20,7 @@ build:
 	python -m build
 
 publish:
-	twine upload dist/*
+	python -m twine upload dist/*
 
 clean:
 	rm -rf build/ dist/ *.egg-info .pytest_cache .mypy_cache .coverage htmlcov

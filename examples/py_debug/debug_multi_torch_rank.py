@@ -20,7 +20,7 @@ import sys
 import argparse
 import torch
 import torch.distributed as dist
-from py_tools.py_debug.debug_utils import Debugger
+from py3_tools.py_debug.debug_utils import Debugger
 
 def main():
     parser = argparse.ArgumentParser(description="PyTorch Distributed Debugging Example")

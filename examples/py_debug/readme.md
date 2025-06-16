@@ -18,8 +18,8 @@
 
 ## Install
 ```shell
-git clone https://github.com/hhhqx/py_tools.git
-cd py_tools
+git clone https://github.com/hhhqx/py3_tools.git
+cd py3_tools
 pip install -e .[py_debug]
 ```
 
@@ -30,7 +30,7 @@ pip install -e .[py_debug]
 使用 `@Debugger.on_error()` 装饰可能出错的函数，在异常发生时自动进入调试模式：
 
 ```python
-from py_tools.py_debug import Debugger
+from py3_tools.py_debug import Debugger
 
 @Debugger.on_error()
 def my_function():
@@ -57,7 +57,7 @@ python your_script.py
 
 ```python
 import torch.distributed as dist
-from py_tools.py_debug import Debugger
+from py3_tools.py_debug import Debugger
 
 dist.init_process_group(backend='nccl')
 rank = dist.get_rank()
@@ -77,7 +77,7 @@ def process_data():
 装饰任何可能出错的函数，当异常发生并且 `IPDB_DEBUG=1` 时，将自动在异常位置进入 ipdb 调试会话：
 
 ```python
-from py_tools.py_debug import Debugger
+from py3_tools.py_debug import Debugger
 
 # 通过命令行参数启用调试
 import argparse

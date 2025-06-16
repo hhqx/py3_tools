@@ -19,7 +19,7 @@ Usage:
 
 import sys
 import argparse
-from py_tools.py_debug.debug_utils import Debugger
+from py3_tools.py_debug.debug_utils import Debugger
 
 def main():
     # Parse command-line arguments

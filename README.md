@@ -1,4 +1,4 @@
-# py_tools
+# py3_tools
 
 个人常用 Python 工具集，包含调试、Gitee PR 统计等实用模块，适用于开发、数据分析和分布式调试等场景。
 
@@ -12,8 +12,8 @@
 ## 安装
 
 ```bash
-git clone https://github.com/hhhqx/py_tools.git
-cd py_tools
+git clone https://github.com/hhhqx/py3_tools.git
+cd py3_tools
 pip install -e .[dev,py_debug,gitee]
 ```
 
