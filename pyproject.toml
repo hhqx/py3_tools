@@ -3,8 +3,8 @@ requires = ["setuptools>=42", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "py3_tools"
-version = "1.0.0"
+name = "py3_tools_hqx"
+version = "1.0.2"
 authors = [
     {name = "hhqx", email = "your.email@example.com"},
 ]
@@ -16,7 +16,10 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
-dependencies = []
+dependencies = [
+    "web-pdb",
+    "ipdb",
+]
 
 [project.urls]
 "Homepage" = "https://github.com/hhqx/py3_tools"
@@ -31,8 +34,6 @@ dev = [
     'build'
 ]
 py_debug = [
-    "web-pdb",
-    "ipdb",
     "torch",
     "numpy"
 ]
@@ -47,4 +48,4 @@ packages = {find = {where = ["src"]}}
 
 [tool.black]
 line-length = 100
-target-version = ["py37", "py38", "py39", "py310"]
+target-version = ["py37", "py38", "py39", "py310","py311"]

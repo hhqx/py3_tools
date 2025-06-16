@@ -18,7 +18,7 @@
 
 ## Install
 ```shell
-git clone https://github.com/hhhqx/py3_tools.git
+git clone https://github.com/hhqx/py3_tools.git
 cd py3_tools
 pip install -e .[py_debug]
 ```
