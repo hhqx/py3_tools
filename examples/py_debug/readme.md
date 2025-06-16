@@ -133,14 +133,14 @@ def train_epoch(model, dataloader):
 [debug_single_process.py](debug_single_process.py): 用于单进程调试。
 ```shell
 export IPDB_DEBUG=1
-python debug_single_process.py --mode error
+python examples/py_debug/debug_single_process.py --mode error
 ```
 
 ### 分布式调试脚本
 [debug_multi_torch_rank.py](debug_multi_torch_rank.py): 用于多进程分布式调试。
 ```shell
 export IPDB_DEBUG=1
-torchrun --nnodes=1 --nproc_per_node=2 debug_multi_torch_rank.py --fail-rank 1
+torchrun --nnodes=1 --nproc_per_node=3 examples/py_debug/debug_multi_torch_rank.py --fail_ranks 0 2
 ```
 
 ## 注意事项

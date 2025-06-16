@@ -11,6 +11,7 @@ Features:
 - **Communication backends**:
   - **NCCL**: high-performance GPU collectives on NVIDIA hardware.
   - **Gloo**: CPU and GPU-capable fallback backend.
+- **Socket-based debugging**: supports remote debugging through Unix sockets.
 
 Usage Examples:
 
@@ -33,6 +34,13 @@ Usage Examples:
         --rdzv_endpoint localhost:29500 \
         debug_utils.py --mode distributed_error
 
+4. Socket-based debugging:
+    
+    export IPDB_DEBUG=1
+    export IPDB_MODE=socket
+    torchrun --nnodes=1 --nproc_per_node=2 debug_multi_torch_rank.py --fail_ranks 1
+    # In another terminal: socat - UNIX-CONNECT:/tmp/pdb.sock.1
+
 Command-line Options:
     --mode [hello|error|distributed_error]
     --debug        Manually enable debug regardless of environment
@@ -46,6 +54,7 @@ import ipdb
 import sys
 import pdb
 import logging
+import socket
 
 # Distributed support
 try:
@@ -66,6 +75,65 @@ except ImportError:
 # Configure module-level logger
 logger = logging.getLogger(__name__)
 
+# Socket-based debugging configuration
+SOCK_PATH = '/tmp/pdb.sock'
+
+class CustomPdb(pdb.Pdb):
+    """Enhanced PDB with custom prompt."""
+    def __init__(self, completekey=None, stdin=None, stdout=None, **kwargs):
+        super().__init__(completekey=completekey, stdin=stdin, stdout=stdout, **kwargs)
+        self.prompt = '(custom-pdb) '
+
+def setup_socket(path):
+    """Create and set up a Unix socket for debugging.
+    
+    Args:
+        path (str): Path where to create the socket
+        
+    Returns:
+        socket.socket: The connected socket
+    """
+    # Remove existing socket file if present
+    if os.path.exists(path):
+        os.unlink(path)
+        
+    # Create server socket
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(path)
+    server.listen(1)
+    
+    print(f"[main] Waiting for debugger client to connect on {path}")
+    conn, _ = server.accept()
+    print("[main] Debugger client connected")
+    
+    server.close()
+    return conn
+
+def get_socket_pdb_params(rank=0):
+    """Get parameters for socket-based PDB debugger.
+    
+    Args:
+        rank (int): Process rank for multi-process debugging
+        
+    Returns:
+        dict: Parameters to pass to pdb.Pdb constructor
+    """
+    # Create socket with rank-specific name
+    conn = setup_socket(f"{SOCK_PATH}.{rank}")
+    print(f"[get_param] Connection established on {SOCK_PATH}.{rank}")
+
+    # Wrap socket connection as file objects
+    conn_r = conn.makefile('r')
+    conn_w = conn.makefile('w')
+
+    # Create parameters dict for pdb
+    debugger_params = {
+        'stdin': conn_r,
+        'stdout': conn_w
+    }
+    return debugger_params
+
+
 class Debugger:
     """
     Debugger encapsulates debugging behavior for functions.
@@ -73,6 +141,9 @@ class Debugger:
     base_port = 4444
     # Initialize flag from env var
     debug_flag = os.getenv('IPDB_DEBUG', '').lower() in ('1', 'true', 'yes')
+    
+    # Debug mode: 'console', 'web', or 'socket'
+    debug_mode = os.getenv('IPDB_MODE', 'console')
     
     @staticmethod
     def _deep_tb():
@@ -113,12 +184,30 @@ class Debugger:
     def blocking_console_post_mortem(rank=0):
         """
         Start an in-process pdb console and block execution.
+        
+        Args:
+            rank (int): Process rank for distributed debugging
         """
         frame, tb = Debugger._deep_tb()
         if tb is None:
             print("No traceback to debug")
             return
-        p = pdb.Pdb()
+            
+        if Debugger.debug_mode == 'socket':
+            # Use socket-based debugging
+            print(f"Starting socket-based debugging for rank {rank}...")
+            
+            logger.error(f"Error occured at [rank:{rank}], using 'nc -U {SOCK_PATH}.{rank}' to connect to the debugger.")
+            p = pdb.Pdb(**get_socket_pdb_params(rank=rank))
+            p.prompt = f'(rank-{rank}-pdb) '
+        else:
+            # Use standard console debugging
+            p = pdb.Pdb()
+            if rank != 0:
+                while True:
+                    # logger.info(f"Rank {rank} has blocked execution for debugging. ")
+                    pass
+            
         p.reset()
         p.interaction(frame, tb)
 
@@ -137,13 +226,21 @@ class Debugger:
                     rank = 0
                     if _dist_available and dist.is_initialized():
                         rank = dist.get_rank()
-                    # Rank 0 uses ipdb
-                    if rank == 0 or not _web_pdb_available:
+                        
+                    # Handle different debug modes
+                    if rank == 0:
                         ipdb.post_mortem()
                     else:
-                        port = cls.base_port + rank
-                        cls.web_post_mortem(port=port)
-                        # cls.blocking_console_post_mortem(rank=rank)
+                        if cls.debug_mode == 'web':
+                            port = cls.base_port + rank
+                            cls.web_post_mortem(port=port)
+                        elif cls.debug_mode == 'socket':
+                            # Use socket-based or console-based debugging
+                            cls.blocking_console_post_mortem(rank=rank)
+                        else:
+                            # Default fallback to web post-mortem
+                            port = cls.base_port + rank
+                            cls.web_post_mortem(port=port)
                     raise
             return wrapper
         return decorator

@@ -422,13 +422,13 @@ def parse_args():
     parser.add_argument('--author', required=True, help='PR author username')
     parser.add_argument('--state', default='all', choices=['all', 'open', 'closed', 'merged'],
                       help='PR state to include (default: all)')
-    parser.add_argument('--per-page', type=int, default=50, help='Number of PRs per page (default: 50)')
-    parser.add_argument('--max-pages', type=int, default=5, help='Maximum number of pages to fetch (default: 5)')
+    parser.add_argument('--per_page', type=int, default=50, help='Number of PRs per page (default: 50)')
+    parser.add_argument('--max_pages', type=int, default=5, help='Maximum number of pages to fetch (default: 5)')
     parser.add_argument('--since', type=lambda s: datetime.fromisoformat(s),
                       help='Only include PRs after this date (ISO format: YYYY-MM-DD)')
     parser.add_argument('--until', type=lambda s: datetime.fromisoformat(s),
                       help='Only include PRs before this date (ISO format: YYYY-MM-DD)')
-    parser.add_argument('--output-dir', default='output', help='Output directory for exported files')
+    parser.add_argument('--output_dir', default='output', help='Output directory for exported files')
     
     return parser.parse_args()
 

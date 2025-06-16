@@ -11,8 +11,15 @@ Usage:
   export IPDB_DEBUG=1
   torchrun --nnodes=1 --nproc_per_node=2 debug_multi_torch_rank.py
 
-  # Or manually specify which rank should fail:
-  torchrun --nnodes=1 --nproc_per_node=2 debug_multi_torch_rank.py --fail-rank 1 --debug
+  # Or manually specify which ranks should fail:
+  torchrun --nnodes=1 --nproc_per_node=3 debug_multi_torch_rank.py --fail_ranks 0 1 --debug
+
+  # Specify debug mode (console, web, socket):
+  export IPDB_MODE=socket
+  torchrun --nnodes=1 --nproc_per_node=3 debug_multi_torch_rank.py --fail_ranks 0,2
+  
+  # In another terminal when using socket mode:
+  # nc -U /tmp/pdb.sock.2
 """
 
 import os
@@ -24,17 +31,25 @@ from py3_tools.py_debug.debug_utils import Debugger
 
 def main():
     parser = argparse.ArgumentParser(description="PyTorch Distributed Debugging Example")
-    parser.add_argument('--fail-rank', type=int, default=1, 
-                        help='Which rank should throw an error')
+    parser.add_argument('--fail_ranks', type=int, nargs='+', default=[1],
+                        help='Which ranks should throw an error')
     parser.add_argument('--debug', action='store_true', 
                         help='Enable debugging')
     parser.add_argument('--backend', type=str, default=None,
                         help='PyTorch distributed backend (nccl or gloo)')
+    parser.add_argument('--debug_mode', choices=['console', 'web', 'socket'], 
+                        help='Debug mode (overrides environment variable)')
+    parser.add_argument('--error_type', choices=['indexerror', 'zerodivision', 'runtime'],
+                        default='indexerror', help='Type of error to trigger')
     args = parser.parse_args()
 
     # Enable debug if requested via command line
     if args.debug:
         Debugger.debug_flag = True
+        
+    # Set debug mode if specified
+    if args.debug_mode:
+        Debugger.debug_mode = args.debug_mode
 
     # Initialize the distributed environment (torchrun should have set the env variables)
     if not args.backend:
@@ -67,11 +82,19 @@ def main():
         # Synchronize all processes
         dist.barrier()
         
-        # The specified rank will throw an error
-        if 1 or rank == args.fail_rank:
+        # The specified ranks will throw an error
+        if rank in args.fail_ranks:
             print(f"[Rank {rank}] About to cause an error...")
-            # Generate an out-of-bounds error
-            bad_value = tensor[20]  # This will raise an IndexError
+            
+            if args.error_type == 'indexerror':
+                # Generate an out-of-bounds error
+                bad_value = tensor[20]  # This will raise an IndexError
+            elif args.error_type == 'zerodivision':
+                # Generate a division by zero error
+                result = tensor[0] / 0
+            else:
+                # Generate a runtime error
+                raise RuntimeError(f"Simulated error on rank {rank}")
             
         # Perform a collective operation
         dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
