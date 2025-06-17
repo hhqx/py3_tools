@@ -11,3 +11,5 @@ make build
 
 
 echo "Ready to publish. Run 'make publish' to upload to PyPI."
+
+make publish
