@@ -226,7 +226,8 @@ class Debugger:
             logger.info(f"Starting socket-based debugging for rank {rank}...")
             
             logger.error(f"Error occurred at [rank:{rank}]: '{cls.exception.__class__.__name__}({cls.exception})'")
-            p, socket_path = pdb.Pdb(**get_socket_pdb_params(rank=rank))
+            param, socket_path = get_socket_pdb_params(rank=rank)
+            p = pdb.Pdb(**param)
             logger.info(f"Connection established on {socket_path}")
             p.prompt = f'(rank-{rank}-pdb) '
         else:

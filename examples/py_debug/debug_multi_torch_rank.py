@@ -146,11 +146,11 @@ def main():
     except Exception as e:
         logger.error(f"Error caught: {e}")
         raise
-    finally:
-        # Clean up
-        logger.debug("Destroying process group")
-        dist.destroy_process_group()
-        logger.info("Process group destroyed")
+    # finally:
+    #     # Clean up
+    #     logger.debug("Destroying process group")
+    #     dist.destroy_process_group()
+    #     logger.info("Process group destroyed")
 
 def init_process_group(backend, timeout=600):
     """Initialize the distributed process group.
