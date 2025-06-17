@@ -1,230 +1,207 @@
-# Python Debugging Utilities
 
-## 核心功能
 
-`py_debug` 是一个的 Python 调试工具，专为解决 Python 应用中的异常捕获与实时调试而设计。它可以：
 
-- **保护异常现场**：在异常发生时，自动捕获并保存完整的调用栈和上下文
-- **动态接入调试器**：无需修改代码，通过环境变量动态开启调试模式
-- **分布式调试支持**：针对 PyTorch 分布式应用提供特殊支持，区分处理不同 rank 进程
-- **多种调试模式**：支持控制台(console)、网页(web)和套接字(socket)三种调试接口
-- **简洁易用**：通过简单的装饰器和环境变量，即可接入强大的调试功能
 
-## 使用场景
+# 🚀 Python Debugging Utilities (`py_debug`)
+<p align="right">
+    <a href="https://github.com/hhqx/py3_tools/tree/master/examples/py_debug/readme.md">
+  <img src="https://img.shields.io/badge/py_debug-高效Python调试工具-blue?style=flat-square&logo=python" />
+  
+  </a>
+</p>
 
-1. **开发调试阶段**：在开发新功能时，快速定位和排查错误
-2. **生产环境故障排查**：通过设置环境变量，临时开启调试模式排查问题
-3. **分布式应用调试**：解决多进程分布式应用（如 PyTorch 分布式训练）中的调试难题
-4. **远程服务器调试**：使用 Web 或 Socket 调试接口，远程连接到服务器进程进行调试
+**`py_debug`** 是一款为复杂 Python 应用场景设计的轻量级、非侵入式调试工具，尤其适用于分布式与多进程环境。
+通过简单的装饰器与环境变量，即可轻松实现自动异常捕获和实时调试。
 
-## Install
+---
+
+## 🌟 核心功能
+
+* ✅ **自动异常捕获**：使用装饰器 `@Debugger.attach_on_error()` 自动捕获异常。
+* 📌 **完整现场保存**：异常时保留完整的调用栈、变量状态与上下文。
+* ⚙️ **多进程协调**：智能处理多进程环境下的 `stdin`/`stdout` 冲突。
+* 📡 **灵活的调试接口**：提供 Console、Web 和 Socket 三种灵活的调试方式。
+* 🧠 **智能环境检测**：自动识别单机或分布式环境，智能选择调试策略。
+
+---
+
+## 📥 安装方式
+
+### 🌐 从 GitHub 源码安装
+
 ```shell
 git clone https://github.com/hhqx/py3_tools.git
 cd py3_tools
 pip install -e .[py_debug]
 ```
 
-## 快速上手
+### 📦 从 PyPI 安装
 
-### 1. 装饰器使用方式
+```shell
+pip install py3_tools_hqx
+```
 
-使用 `@Debugger.attach_on_error()` 装饰可能出错的函数，在异常发生时自动进入调试模式：
+---
+
+## 🎯 快速入门
+
+### 🚩 基础用法（装饰器调试）
+
+将装饰器添加到可能发生异常的函数上，异常发生时自动启动调试器：
 
 ```python
+# your_script.py
 from py3_tools.py_debug import Debugger
 
 @Debugger.attach_on_error()
-def my_function():
-    x = 10
-    y = 0
-    return x / y  # 这里会触发 ZeroDivisionError
+def risky_operation():
+    result = 1 / 0  # 故意制造异常
+
+if __name__ == "__main__":
+    risky_operation()
 ```
 
-### 2. 通过环境变量启用调试
-
-无需修改代码，通过环境变量动态控制是否开启调试：
+**环境变量开启调试：**
 
 ```bash
-# 开启调试模式
 export IPDB_DEBUG=1
-
-# 选择调试模式：console(默认), web, socket
 export IPDB_MODE=console
-
-# 运行程序
 python your_script.py
 ```
 
-### 3. 分布式应用调试
+### 🖥️ 调试器示例界面：
 
-在 PyTorch 分布式环境中，不同 rank 使用不同的调试方式：
+<details open>
+<summary>📌 点击展开日志示例 (Console)</summary>
+
+```log
+📌 2023-07-15 10:24:32 | INFO  | Registering `risky_operation` for debug.
+❌ 2023-07-15 10:24:32 | ERROR | Exception caught in risky_operation:
+Traceback (most recent call last):
+  File "/path/py_debug/debug_utils.py", line 273, in debuggable_function_wrapper
+    return target_function(*args, **kwargs)
+  File "your_script.py", line 6, in risky_operation
+    result = 1 / 0
+ZeroDivisionError: division by zero
+
+🐞 Entering ipdb debugger...
+> your_script.py(6)risky_operation()
+      5     # 任何可能抛异常的逻辑
+----> 6     result = 1 / 0
+      7 
+
+ipdb> p locals()
+{'result': <undefined>}
+ipdb> q  # 退出调试器
+```
+
+</details>
+
+
+---
+
+### 📡 分布式调试示例（PyTorch 场景）
+
+
+#### 环境变量说明
+
+| 变量名          | 默认值      | 说明                              |
+| ------------ | -------- | ------------------------------- |
+| `IPDB_DEBUG` | `0`      | 是否启用调试模式（`1`开启）                 |
+| `IPDB_MODE`  | `socket` | 调试模式 (`console`/`web`/`socket`) |
+
+#### 环境变量使用示例：
+
+```bash
+export IPDB_DEBUG=1
+export IPDB_MODE=web
+python your_script.py
+```
+
+#### 分布式多进程调试示例：
+1. **分布式脚本**：`distributed_example.py`
 
 ```python
 import torch.distributed as dist
 from py3_tools.py_debug import Debugger
 
-dist.init_process_group(backend='nccl')
+dist.init_process_group(backend='gloo')
 rank = dist.get_rank()
 
 @Debugger.attach_on_error()
-def process_data():
+def train_step():
+    print(f"Process rank {rank} running train_step()")
     if rank == 1:
-        # rank 1 会触发错误，自动启动调试器
-        x = [1, 2, 3][10]  # 索引越界错误
-    return "Success"
+        raise RuntimeError("模拟错误发生于进程 rank 1")
+
+if __name__ == '__main__':
+    train_step()
 ```
 
-### 4. 上下文异常调试
+2. **启动调试**：
 
-可以使用 try/except 块和 Debugger 方法来调试特定代码块：
-
-```python
-from py3_tools.py_debug import Debugger
-import sys
-
-def risky_function():
-    try:
-        print("执行风险操作...")
-        result = 1 / 0
-        return result
-    except Exception as e:
-        if Debugger.debug_flag:
-            print(f"捕获到异常: {e}")
-            _, tb = sys.exc_info()[1], sys.exc_info()[2]
-            Debugger.blocking_console_post_mortem(rank=0)
-        else:
-            raise
-```
-
-## 详细使用说明
-
-### 单进程调试
-
-装饰任何可能出错的函数，当异常发生并且 `IPDB_DEBUG=1` 时，将自动在异常位置进入调试会话：
-
-```python
-from py3_tools.py_debug import Debugger
-
-# 通过命令行参数启用调试
-import argparse
-parser = argparse.ArgumentParser()
-parser.add_argument('--debug', action='store_true')
-parser.add_argument('--debug_mode', choices=['console', 'web', 'socket'])
-args = parser.parse_args()
-
-if args.debug:
-    Debugger.debug_flag = True
-if args.debug_mode:
-    Debugger.debug_mode = args.debug_mode
-
-@Debugger.attach_on_error()
-def complex_calculation():
-    # 一些可能出错的代码
-    result = process_data()
-    return analyze_result(result)
-```
-
-### 分布式 PyTorch 调试
-
-针对分布式训练，系统会自动处理不同 rank 的调试方式：
-
-```python
-@Debugger.attach_on_error()
-def train_epoch(model, dataloader):
-    for batch in dataloader:
-        outputs = model(batch)
-        loss = compute_loss(outputs)
-        loss.backward()
-        # 如果这里出现错误，根据 debug_mode 和 rank 不同采取不同调试方式:
-        # - console 模式: rank 0 直接在控制台调试，其他 rank 暂停等待
-        # - web 模式: 每个 rank 在端口 4444+rank 启动 web-pdb 服务器
-        # - socket 模式: 每个 rank 创建 Unix 套接字等待调试客户端连接
-```
-
-### 调试模式说明
-
-系统支持三种调试模式，可通过环境变量 `IPDB_MODE` 或代码中设置 `Debugger.debug_mode` 来选择：
-
-1. **console**: 
-   - rank 0 使用标准控制台调试，其他 rank 暂停等待
-   - 适合单机开发调试
-
-2. **web**:
-   - 每个 rank 启动独立的 web-pdb 服务器
-   - 服务器端口: `4444 + rank` 
-   - 通过浏览器访问 `http://hostname:port/` 进行调试
-   - 适合远程开发环境
-
-3. **socket (默认)**:
-   - 每个 rank 创建 Unix 套接字 `/tmp/pdb.sock.{rank}`
-   - 调试客户端可通过 `nc -U /tmp/pdb.sock.{rank}` 或 `socat - UNIX-CONNECT:/tmp/pdb.sock.{rank}` 连接
-   - 适合无 GUI 环境或需要自定义调试客户端的场景
-
-## 实现细节
-1. **异常捕获机制**：
-   - 使用装饰器拦截函数执行过程中的异常。
-   - 检查调试模式是否开启（环境变量或标志）。
-   - 获取异常信息和调用栈，准备调试环境。
-
-2. **调试器启动逻辑**：
-   - 单进程：直接使用 `ipdb.post_mortem()` 在异常位置启动交互式调试。
-   - 多进程：根据 rank 和 debug_mode 决定调试方式：
-     - console 模式: rank 0 使用 ipdb，其他 rank 阻塞等待
-     - web 模式: 所有 rank 启动 web-pdb 服务器在不同端口
-     - socket 模式: 所有 rank 创建 Unix 套接字等待连接
-
-3. **环境变量控制**：
-   - 通过 `IPDB_DEBUG=1` 开启调试模式。
-   - 通过 `IPDB_MODE=[console|web|socket]` 选择调试模式。
-   - 可通过命令行参数覆盖环境变量设置。
-
-## 示例脚本
-### 单进程调试脚本
-[debug_single_process.py](debug_single_process.py): 演示各种单进程调试场景。
-```shell
-# 基本用法
-export IPDB_DEBUG=1
-python examples/py_debug/debug_single_process.py --mode error
-
-# 使用上下文管理器进行调试
-python examples/py_debug/debug_single_process.py --mode context --debug
-
-# 使用 web 模式调试
-export IPDB_MODE=web
-python examples/py_debug/debug_single_process.py --mode math_error --debug
-```
-
-### 分布式调试脚本
-[debug_multi_torch_rank.py](debug_multi_torch_rank.py): 演示不同错误类型和调试模式的分布式调试。
-```shell
-# 基本用法（默认 console 模式）
-export IPDB_DEBUG=1
-torchrun --nnodes=1 --nproc_per_node=3 examples/py_debug/debug_multi_torch_rank.py --fail_ranks 0 2
-
-# 使用 socket 模式调试
+```bash
 export IPDB_DEBUG=1
 export IPDB_MODE=socket
-torchrun --nnodes=1 --nproc_per_node=3 examples/py_debug/debug_multi_torch_rank.py --fail_ranks 1
-# 在另一个终端中：nc -U /tmp/pdb.sock.1
-
-# 测试不同类型的错误
-torchrun --nnodes=1 --nproc_per_node=2 examples/py_debug/debug_multi_torch_rank.py --fail_ranks 0 --error_type zerodivision --debug
+torchrun --nnodes=1 --nproc_per_node=3 distributed_example.py
 ```
 
-## 注意事项
-- **分布式调试**：
-  - `console` 模式: 只有 `rank 0` 进行交互式调试，其他 rank 暂停等待。
-  - `web` 模式: 各 rank 在端口 `4444 + rank` 启动独立服务器。
-  - `socket` 模式: 各 rank 创建套接字 `/tmp/pdb.sock.{rank}` 等待连接。
-- **环境变量**：
-  - `IPDB_DEBUG=1`: 启用调试功能。
-  - `IPDB_MODE=[console|web|socket]`: 设置调试模式。
-  - 使用 `torchrun` 时需设置正确的分布式环境。
-- **调试客户端**：
-  - Socket 模式推荐使用 `nc -U /tmp/pdb.sock.{rank}` 或 `socat - UNIX-CONNECT:/tmp/pdb.sock.{rank}` 连接。
+3. **连接 Socket 调试器（Rank 1）**：
+
+```bash
+nc -U /tmp/pdb.sock.1
+```
+
+<details>
+<summary>📌 点击展开 Socket 调试日志示例</summary>
+
+```log
+📌 2023-07-15 11:04:23 | ERROR | Exception caught:
+RuntimeError: 模拟错误发生于进程 rank 1
+📡 Waiting for debugger client on /tmp/pdb.sock.1...
+🐞 Debugger connected:
+
+> distributed_example.py(14)train_step()
+     13     if rank == 1:
+---> 14         raise RuntimeError("模拟错误发生于进程 rank 1")
+
+(rank-1-pdb) p rank
+1
+(rank-1-pdb) q
+```
+
+</details>
+
+---
+
+## 🛠️ 调试模式对比
+
+| 模式          | 适用场景   | 特点              | 访问方式                         |
+| ----------- | ------ | --------------- | ---------------------------- |
+| **Console** | 单机开发   | Rank0 直接交互，其他阻塞 | 终端                           |
+| **Web**     | 远程环境   | 每 Rank 独立端口调试   | `http://host:4444+rank`      |
+| **Socket**  | 无GUI环境 | Unix 套接字连接      | `nc -U /tmp/pdb.sock.{rank}` |
+
+---
+
+## 📖 最佳实践
+
+* 开发与测试推荐 `console` 或 `web` 模式
+* 生产环境或无 GUI 推荐 `socket` 模式
+* 仅装饰关键或复杂函数
+
+```python
+from py3_tools.py_debug import Debugger
+
+@Debugger.attach_on_error()
+def critical_function():
+    ...
+```
+
+---
 
 
-## 工作原理
+## 🧩 详细工作流程
 
 `py_debug` 工具采用装饰器模式捕获异常，并根据环境提供合适的调试接口。下面通过流程图和时序图来解释其工作原理。
 
@@ -320,13 +297,19 @@ sequenceDiagram
     end
 ```
 
-### 3. 实现机制
 
-- **装饰器模式**: `@Debugger.attach_on_error()` 拦截函数执行并捕获异常
-- **环境检测**: 通过环境变量 `IPDB_DEBUG` 或命令行参数 `--debug` 启用调试
-- **分布式感知**: 检测 PyTorch 分布式环境并获取当前进程的 rank
-- **异常现场保护**: 保留完整调用栈和变量信息，不丢失异常上下文
-- **多种调试界面**: 
-  - console 模式: rank 0 使用标准 ipdb 交互调试，其他 rank 等待
-  - web 模式: 使用 web-pdb 提供 Web 界面，便于远程调试
-  - socket 模式: 创建 Unix 套接字，允许任意客户端连接，最大灵活性
+---
+
+## 🤝 贡献与反馈
+
+欢迎通过 [GitHub Issues](https://github.com/hhqx/py3_tools/issues) 提交反馈和建议，也欢迎提交 Pull Requests。
+
+---
+
+## 📄 许可证
+
+项目采用 [MIT License](LICENSE)。
+
+---
+
+
