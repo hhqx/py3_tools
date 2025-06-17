@@ -20,14 +20,59 @@ Usage:
   
   # In another terminal when using socket mode:
   # nc -U /tmp/pdb.sock.2
+  
+  # Set logging level:
+  torchrun --nnodes=1 --nproc_per_node=2 debug_multi_torch_rank.py --fail_ranks 1 --log_level DEBUG
+  
+  # Specify custom timeout for distributed operations:
+  torchrun --nnodes=1 --nproc_per_node=2 debug_multi_torch_rank.py --timeout 1800
 """
 
 import os
 import sys
 import argparse
+import logging
+import datetime
+import time
+import threading
 import torch
 import torch.distributed as dist
-from py3_tools.py_debug.debug_utils import Debugger
+from py3_tools.py_debug.debug_utils import Debugger, setup_logging, get_debug_coordinator
+
+# Get module logger
+logger = logging.getLogger(__name__)
+
+# Safe wrapper for distributed operations
+def safe_collective(func, *args, timeout=600, **kwargs):
+    """
+    Execute collective operations safely when debugging is active.
+    
+    Args:
+        func: The collective function to call (e.g., dist.barrier)
+        timeout: Maximum time to wait if no debugging is active
+        args, kwargs: Arguments to pass to the collective function
+    """
+    # Check if any rank is being debugged
+    coordinator = get_debug_coordinator()
+    debugging_ranks = coordinator.is_debugging()
+    
+    if debugging_ranks:
+        # Some rank is being debugged
+        debug_info = ", ".join(f"rank {r}" for r in debugging_ranks)
+        logger.warning(f"Executing {func.__name__} while ranks are being debugged: {debug_info}")
+        
+        # If we're debugging with socket mode, perform wrapped operation with infinite timeout
+        if 'timeout' in kwargs:
+            logger.debug(f"Removing timeout from {func.__name__} during debugging")
+            # Remove timeout to allow debugging as long as needed
+            kwargs.pop('timeout')
+        
+        # For special timeout parameter
+        if func.__name__ == 'barrier':
+            kwargs['timeout'] = datetime.timedelta(days=365)  # Very long timeout
+    
+    # Execute the collective operation
+    return func(*args, **kwargs)
 
 def main():
     parser = argparse.ArgumentParser(description="PyTorch Distributed Debugging Example")
@@ -41,34 +86,50 @@ def main():
                         help='Debug mode (overrides environment variable)')
     parser.add_argument('--error_type', choices=['indexerror', 'zerodivision', 'runtime'],
                         default='indexerror', help='Type of error to trigger')
+    parser.add_argument('--log_level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+                       default='INFO', help='Set logging level')
+    parser.add_argument('--timeout', type=int, default=600,
+                       help='Timeout in seconds for distributed operations (default: 10 minutes)')
+    parser.add_argument('--safe_mode', action='store_true', default=True,
+                       help='Use safe collective operations with debug awareness')
     args = parser.parse_args()
-
-    # Enable debug if requested via command line
-    if args.debug:
-        Debugger.debug_flag = True
-        
-    # Set debug mode if specified
-    if args.debug_mode:
-        Debugger.debug_mode = args.debug_mode
 
     # Initialize the distributed environment (torchrun should have set the env variables)
     if not args.backend:
         args.backend = 'nccl' if torch.cuda.is_available() else 'gloo'
     
     try:
-        init_process_group(args.backend)
+        init_process_group(args.backend, timeout=args.timeout)
+        # Get rank for logging
+        rank = dist.get_rank()
     except Exception as e:
-        print(f"Failed to initialize process group: {e}")
-        print("Make sure to run this script with torchrun")
+        logger.error(f"Failed to initialize process group: {e}")
+        logger.error("Make sure to run this script with torchrun")
         sys.exit(1)
+        
+    # Set up logging with rank information
+    log_level = getattr(logging, args.log_level)
+    setup_logging(level=log_level, rank=rank)
     
+    # Enable debug if requested via command line
+    if args.debug:
+        Debugger.debug_flag = True
+        logger.info("Debugging enabled via command line flag")
+    elif Debugger.debug_flag:
+        logger.info("Debugging enabled via environment variable")
+    
+    # Set debug mode if specified
+    if args.debug_mode:
+        Debugger.debug_mode = args.debug_mode
+        logger.info(f"Debug mode set to: {args.debug_mode}")
+
     # Get distributed info
-    rank = dist.get_rank()
     world_size = dist.get_world_size()
+    logger.info(f"Initialized process group: {args.backend}, world_size={world_size}, timeout={args.timeout}s")
 
-    print(f"[Rank {rank}] Initialized process group: {args.backend}, "
-          f"world_size={world_size}")
-
+    # Start debug watchdog thread for monitoring debugging ranks
+    start_debug_watchdog(world_size)
+    
     # Example functions with debugging
     @Debugger.on_error()
     def process_tensor():
@@ -76,61 +137,127 @@ def main():
         # Each rank creates a tensor
         tensor = torch.ones(10) * rank
         
-        # All ranks print their tensor
-        print(f"[Rank {rank}] Created tensor: {tensor}")
+        # All ranks log their tensor
+        logger.debug(f"Created tensor: {tensor}")
         
         # Synchronize all processes
-        dist.barrier()
+        logger.debug("Synchronizing processes with barrier()")
+        if args.safe_mode:
+            safe_collective(dist.barrier, timeout=datetime.timedelta(seconds=args.timeout))
+        else:
+            dist.barrier(timeout=datetime.timedelta(seconds=args.timeout))
         
         # The specified ranks will throw an error
         if rank in args.fail_ranks:
-            print(f"[Rank {rank}] About to cause an error...")
+            logger.warning(f"About to cause an error of type '{args.error_type}'...")
             
             if args.error_type == 'indexerror':
                 # Generate an out-of-bounds error
+                logger.debug("Attempting to access index 20 (out of bounds)")
                 bad_value = tensor[20]  # This will raise an IndexError
             elif args.error_type == 'zerodivision':
                 # Generate a division by zero error
+                logger.debug("Attempting division by zero")
                 result = tensor[0] / 0
             else:
                 # Generate a runtime error
+                logger.debug("Raising RuntimeError")
                 raise RuntimeError(f"Simulated error on rank {rank}")
             
         # Perform a collective operation
-        dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
-        print(f"[Rank {rank}] After all_reduce: {tensor}")
-        
+        logger.debug("Performing all_reduce operation")
+        if args.safe_mode:
+            safe_collective(dist.all_reduce, tensor, op=dist.ReduceOp.SUM)
+        else:
+            dist.all_reduce(tensor, op=dist.ReduceOp.SUM, timeout=datetime.timedelta(seconds=args.timeout))
+            
+        logger.info(f"After all_reduce: {tensor}")
         return tensor
 
-    # result = process_tensor()
-    # print(f"[Rank {rank}] Process completed successfully")
-        
+    logger.debug("Starting first tensor operation")
+    try:
+        result = process_tensor()
+        logger.info("First tensor operation completed successfully")
+    except Exception as e:
+        logger.error(f"Error during first tensor operation: {e}")
+        raise
+    
+    logger.debug("Starting second tensor operation")
     try:
         # Run the function that will error on the specified rank
         result = process_tensor()
-        print(f"[Rank {rank}] Process completed successfully")
+        logger.info("Process completed successfully")
     except Exception as e:
-        print(f"[Rank {rank}] Error caught: {e}")
+        logger.error(f"Error caught: {e}")
+        raise
     finally:
         # Clean up
+        logger.debug("Destroying process group")
         dist.destroy_process_group()
-        print(f"[Rank {rank}] Process group destroyed")
+        logger.info("Process group destroyed")
 
-def init_process_group(backend):
-    """Initialize the distributed process group."""
+def start_debug_watchdog(world_size):
+    """Start a watchdog thread to monitor debugging ranks."""
+    def watchdog_thread():
+        coordinator = get_debug_coordinator(world_size)
+        
+        while True:
+            try:
+                debugging_ranks = coordinator.is_debugging()
+                if debugging_ranks:
+                    debug_info = []
+                    for rank, info in debugging_ranks.items():
+                        if isinstance(info, dict) and 'debug_mode' in info:
+                            mode = info.get('debug_mode', 'unknown')
+                            debug_info.append(f"rank {rank} ({mode})")
+                        else:
+                            debug_info.append(f"rank {rank}")
+                    
+                    if debug_info:
+                        logger.info(f"Debugging in progress: {', '.join(debug_info)}")
+                
+                time.sleep(5)  # Check every 5 seconds
+            except:
+                # Handle any exceptions in the watchdog thread
+                pass
+    
+    # Start the watchdog thread
+    thread = threading.Thread(target=watchdog_thread, daemon=True)
+    thread.start()
+    return thread
+
+def init_process_group(backend, timeout=600):
+    """Initialize the distributed process group.
+    
+    Args:
+        backend (str): PyTorch distributed backend ('nccl' or 'gloo')
+        timeout (int): Timeout in seconds for distributed operations
+    """
+    # Convert timeout to timedelta
+    timeout_delta = datetime.timedelta(seconds=timeout)
+    
     # Check if we're using torchrun with the required env vars set
     required_vars = ['RANK', 'WORLD_SIZE', 'MASTER_ADDR', 'MASTER_PORT']
     if all(var in os.environ for var in required_vars):
-        dist.init_process_group(backend=backend)
+        world_size = int(os.environ['WORLD_SIZE'])
+        job_id = f"{os.environ['MASTER_ADDR']}_{os.environ['MASTER_PORT']}"
+        
+        # Initialize debug coordinator
+        get_debug_coordinator(world_size=world_size, job_id=job_id)
+        
+        logger.debug(f"Found distributed environment variables, initializing with {backend} backend (timeout: {timeout}s)")
+        dist.init_process_group(backend=backend, timeout=timeout_delta)
     else:
         # Fallback to a local setup
+        logger.warning("Missing distributed environment variables, falling back to local setup")
         os.environ['MASTER_ADDR'] = 'localhost'
         os.environ['MASTER_PORT'] = '29500'
         if 'RANK' not in os.environ:
             os.environ['RANK'] = '0'
         if 'WORLD_SIZE' not in os.environ:
             os.environ['WORLD_SIZE'] = '1'
-        dist.init_process_group(backend=backend)
+        logger.debug(f"Using local setup with RANK={os.environ['RANK']}, WORLD_SIZE={os.environ['WORLD_SIZE']}, timeout={timeout}s")
+        dist.init_process_group(backend=backend, timeout=timeout_delta)
 
 if __name__ == "__main__":
     main()

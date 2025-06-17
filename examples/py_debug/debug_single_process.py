@@ -19,11 +19,18 @@ Usage:
   
   # Try new context manager example:
   python debug_single_process.py --mode context --debug
+  
+  # Set logging level:
+  python debug_single_process.py --mode error --debug --log_level DEBUG
 """
 
 import sys
 import argparse
-from py3_tools.py_debug.debug_utils import Debugger
+import logging
+from py3_tools.py_debug.debug_utils import Debugger, setup_logging
+
+# Get module logger
+logger = logging.getLogger(__name__)
 
 def main():
     # Parse command-line arguments
@@ -34,40 +41,46 @@ def main():
     parser.add_argument('--name', type=str, default='Developer', help='Name to greet')
     parser.add_argument('--debug_mode', choices=['console', 'web', 'socket'], 
                       help='Debug mode (overrides environment variable)')
+    parser.add_argument('--log_level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+                       default='INFO', help='Set logging level')
     args = parser.parse_args()
+    
+    # Set up logging
+    log_level = getattr(logging, args.log_level)
+    setup_logging(level=log_level)
     
     # Enable debug if requested via command line
     if args.debug:
         Debugger.debug_flag = True
-        print("Debugging enabled via command line flag")
+        logger.info("Debugging enabled via command line flag")
     elif Debugger.debug_flag:
-        print("Debugging enabled via environment variable")
+        logger.info("Debugging enabled via environment variable")
     else:
-        print("Debugging disabled. Run with --debug or set IPDB_DEBUG=1")
+        logger.info("Debugging disabled. Run with --debug or set IPDB_DEBUG=1")
     
     # Set debug mode if specified
     if args.debug_mode:
         Debugger.debug_mode = args.debug_mode
-        print(f"Debug mode set to: {args.debug_mode}")
+        logger.info(f"Debug mode set to: {args.debug_mode}")
     
     # Define example functions with debug support
     
     @Debugger.on_error()
     def hello_function(name):
         """Simple greeting function."""
-        print(f"Hello, {name}! Debug example is ready.")
+        logger.info(f"Hello, {name}! Debug example is ready.")
         return f"Hello, {name}!"
     
     @Debugger.on_error()
     def error_function():
         """Function that raises a runtime error."""
-        print("About to raise an error...")
+        logger.warning("About to raise an error...")
         raise RuntimeError("This is a test error")
     
     @Debugger.on_error()
     def math_error_function():
         """Function with a division by zero error."""
-        print("About to perform division...")
+        logger.warning("About to perform division by zero...")
         x = 10
         y = 0
         result = x / y  # This will raise ZeroDivisionError
@@ -75,16 +88,17 @@ def main():
         
     def context_manager_example():
         """Example using a with-block for debugging a specific code block."""
-        print("Starting context manager example...")
+        logger.info("Starting context manager example...")
         try:
-            print("Before potential error")
+            logger.debug("Before potential error")
             # This block will be debugged if an exception occurs
             risky_operation = lambda: 1/0
+            logger.warning("Executing risky operation (division by zero)...")
             risky_operation()
-            print("After potential error (this won't be reached)")
+            logger.info("After potential error (this won't be reached)")
         except Exception as e:
             if Debugger.debug_flag:
-                print(f"Error in context: {e}")
+                logger.error(f"Error in context: {e}")
                 frame, tb = sys.exc_info()[1], sys.exc_info()[2]
                 if Debugger.debug_mode == 'web':
                     Debugger.web_post_mortem(port=Debugger.base_port)
@@ -95,6 +109,7 @@ def main():
     
     # Execute the requested function based on mode
     try:
+        logger.debug(f"Executing mode: {args.mode}")
         if args.mode == 'hello':
             hello_function(args.name)
         elif args.mode == 'error':
@@ -104,10 +119,10 @@ def main():
         elif args.mode == 'context':
             context_manager_example()
     except Exception as e:
-        print(f"Error caught at top level: {e}")
-        sys.exit(1)
+        logger.critical(f"Error caught at top level: {e}")
+        raise
     
-    print("Program completed successfully")
+    logger.info("Program completed successfully")
 
 if __name__ == "__main__":
     main()

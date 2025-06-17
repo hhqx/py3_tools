@@ -45,6 +45,7 @@ Command-line Options:
     --mode [hello|error|distributed_error]
     --debug        Manually enable debug regardless of environment
     --name         Name for hello
+    --log_level    Set logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
 
 '''
 import os
@@ -55,6 +56,12 @@ import sys
 import pdb
 import logging
 import socket
+import signal
+import threading
+import time
+import tempfile
+import atexit
+import json
 
 # Distributed support
 try:
@@ -77,6 +84,213 @@ logger = logging.getLogger(__name__)
 
 # Socket-based debugging configuration
 SOCK_PATH = '/tmp/pdb.sock'
+
+# Debug coordination mechanism
+DEBUG_COORD_DIR = os.path.join(tempfile.gettempdir(), 'py_debug_coord')
+os.makedirs(DEBUG_COORD_DIR, exist_ok=True)
+
+class DistributedDebugCoordinator:
+    """
+    Coordinates debugging sessions across distributed processes.
+    
+    This class handles the signaling mechanism to prevent deadlocks
+    during distributed collective operations when a rank is being debugged.
+    """
+    def __init__(self, world_size=None, job_id=None):
+        """
+        Initialize coordinator.
+        
+        Args:
+            world_size: Number of processes in the distributed setup
+            job_id: Unique job identifier (default: use RANK+MASTER_ADDR+MASTER_PORT)
+        """
+        self.world_size = world_size
+        
+        # Generate a unique job ID if not provided
+        if job_id is None:
+            # Use distributed environment vars if available
+            addr = os.environ.get('MASTER_ADDR', 'localhost')
+            port = os.environ.get('MASTER_PORT', '0')
+            self.job_id = f"{addr}_{port}"
+        else:
+            self.job_id = job_id
+            
+        # Path where debug status flags are stored
+        self.coord_dir = os.path.join(DEBUG_COORD_DIR, self.job_id)
+        os.makedirs(self.coord_dir, exist_ok=True)
+        
+        # Setup signal handlers to prevent premature termination
+        self._setup_signal_handlers()
+        
+        # Clean up resources when process exits
+        atexit.register(self.cleanup)
+        
+        logger.debug(f"Initialized debug coordinator with job_id: {self.job_id}")
+    
+    def _setup_signal_handlers(self):
+        """Install signal handlers to handle termination gracefully."""
+        def handler(signum, frame):
+            logger.warning(f"Received signal {signum}, cleaning up debug coordination resources")
+            self.cleanup()
+            # Re-raise the original signal
+            signal.signal(signum, signal.SIG_DFL)
+            os.kill(os.getpid(), signum)
+        
+        # Handle common termination signals
+        signal.signal(signal.SIGTERM, handler)
+        signal.signal(signal.SIGINT, handler)
+    
+    def set_debugging(self, rank, status=True, info=None):
+        """Set debugging status for a specific rank.
+        
+        Args:
+            rank: Process rank
+            status: True if rank is being debugged, False otherwise
+            info: Additional debugging information to share
+        """
+        flag_file = os.path.join(self.coord_dir, f"rank_{rank}")
+        
+        if status:
+            # Create flag file with debugging info
+            data = {
+                'rank': rank,
+                'pid': os.getpid(),
+                'time': time.time(),
+                'info': info or {}
+            }
+            with open(flag_file, 'w') as f:
+                json.dump(data, f)
+            logger.debug(f"Set debugging flag for rank {rank}")
+        elif os.path.exists(flag_file):
+            # Remove flag file
+            try:
+                os.remove(flag_file)
+                logger.debug(f"Cleared debugging flag for rank {rank}")
+            except OSError:
+                pass
+    
+    def is_debugging(self, rank=None):
+        """Check if a rank is being debugged.
+        
+        Args:
+            rank: Specific rank to check, or None to check any rank
+            
+        Returns:
+            bool: True if specified rank is being debugged
+            dict: If rank is None, returns dict with all debugging ranks
+        """
+        if rank is not None:
+            # Check specific rank
+            flag_file = os.path.join(self.coord_dir, f"rank_{rank}")
+            return os.path.exists(flag_file)
+        else:
+            # Check all ranks
+            debugging_ranks = {}
+            if not os.path.exists(self.coord_dir):
+                return debugging_ranks
+                
+            for filename in os.listdir(self.coord_dir):
+                if filename.startswith("rank_"):
+                    try:
+                        rank = int(filename.split("_")[1])
+                        flag_file = os.path.join(self.coord_dir, filename)
+                        
+                        try:
+                            with open(flag_file, 'r') as f:
+                                data = json.load(f)
+                            debugging_ranks[rank] = data
+                        except:
+                            debugging_ranks[rank] = {'time': os.path.getmtime(flag_file)}
+                    except:
+                        pass
+            
+            return debugging_ranks
+    
+    def wait_for_debugger_completion(self, rank):
+        """Wait until a specific rank completes debugging.
+        
+        Args:
+            rank: Process rank to wait for
+            
+        Returns:
+            bool: True if rank completed debugging, False if timeout
+        """
+        flag_file = os.path.join(self.coord_dir, f"rank_{rank}")
+        
+        if not os.path.exists(flag_file):
+            return True  # Not debugging, no need to wait
+            
+        logger.warning(f"Waiting for rank {rank} to complete debugging...")
+        while os.path.exists(flag_file):
+            time.sleep(1)
+        
+        logger.info(f"Rank {rank} has completed debugging")
+        return True
+    
+    def cleanup(self):
+        """Remove all debug coordination files for this job."""
+        if not os.path.exists(self.coord_dir):
+            return
+            
+        # Remove all flag files
+        try:
+            for filename in os.listdir(self.coord_dir):
+                try:
+                    os.remove(os.path.join(self.coord_dir, filename))
+                except:
+                    pass
+            
+            # Try to remove the directory
+            try:
+                os.rmdir(self.coord_dir)
+            except:
+                pass
+                
+            logger.debug(f"Cleaned up debug coordination resources for job {self.job_id}")
+        except:
+            pass
+
+# Global debug coordinator instance
+debug_coordinator = None
+
+def get_debug_coordinator(world_size=None, job_id=None):
+    """Get or create the global debug coordinator instance."""
+    global debug_coordinator
+    
+    if debug_coordinator is None:
+        debug_coordinator = DistributedDebugCoordinator(
+            world_size=world_size,
+            job_id=job_id
+        )
+        
+    return debug_coordinator
+
+def setup_logging(level=logging.INFO, rank=None):
+    """Configure logging with appropriate format and level.
+    
+    Args:
+        level (int): Logging level (e.g., logging.DEBUG, logging.INFO)
+        rank (int, optional): Process rank for distributed environments
+    """
+    # Determine rank suffix for the format
+    rank_suffix = f"[rank:{rank}] " if rank is not None else ""
+    
+    # Configure root logger
+    root_logger = logging.getLogger()
+    if not root_logger.handlers:  # Only add handler if none exists
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter(
+            f'%(asctime)s - {rank_suffix}%(levelname)s - %(name)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        handler.setFormatter(formatter)
+        root_logger.addHandler(handler)
+    
+    # Set level for this module's logger and root logger
+    logger.setLevel(level)
+    root_logger.setLevel(level)
+    
+    return logger
 
 class CustomPdb(pdb.Pdb):
     """Enhanced PDB with custom prompt."""
@@ -102,9 +316,18 @@ def setup_socket(path):
     server.bind(path)
     server.listen(1)
     
-    print(f"[main] Waiting for debugger client to connect on {path}")
+    # Signal other processes that we're entering debug mode
+    if _dist_available and dist.is_initialized():
+        coord = get_debug_coordinator()
+        rank = dist.get_rank()
+        coord.set_debugging(rank, True, {
+            'socket_path': path,
+            'debug_mode': 'socket'
+        })
+    
+    logger.info(f"Waiting for debugger client to connect on {path}, use 'nc -U {path}' to connect to the debugger.")
     conn, _ = server.accept()
-    print("[main] Debugger client connected")
+    logger.info("Debugger client connected")
     
     server.close()
     return conn
@@ -119,8 +342,8 @@ def get_socket_pdb_params(rank=0):
         dict: Parameters to pass to pdb.Pdb constructor
     """
     # Create socket with rank-specific name
-    conn = setup_socket(f"{SOCK_PATH}.{rank}")
-    print(f"[get_param] Connection established on {SOCK_PATH}.{rank}")
+    socket_path = f"{SOCK_PATH}.{rank}"
+    conn = setup_socket(socket_path)
 
     # Wrap socket connection as file objects
     conn_r = conn.makefile('r')
@@ -131,7 +354,7 @@ def get_socket_pdb_params(rank=0):
         'stdin': conn_r,
         'stdout': conn_w
     }
-    return debugger_params
+    return debugger_params, socket_path
 
 
 class Debugger:
@@ -144,6 +367,9 @@ class Debugger:
     
     # Debug mode: 'console', 'web', or 'socket'
     debug_mode = os.getenv('IPDB_MODE', 'console')
+    
+    # Keep track of the last exception
+    exception = None
     
     @staticmethod
     def _deep_tb():
@@ -158,30 +384,39 @@ class Debugger:
     @staticmethod
     def web_post_mortem(port=4444):
         """Start a web-based post-mortem debugging session, preserving full stack."""
-        # 获取当前异常信息
+        # Signal other processes that we're entering debug mode
+        if _dist_available and dist.is_initialized():
+            coord = get_debug_coordinator()
+            rank = dist.get_rank()
+            coord.set_debugging(rank, True, {
+                'port': port,
+                'debug_mode': 'web'
+            })
+        
+        # Get current exception info
         exc_type, exc_value, exc_tb = sys.exc_info()
         if exc_tb is None:
-            print("No traceback to debug")
+            logger.error("No traceback to debug")
             return
 
-        # 找到调用链最深（出错点）的 tb
+        # Find the deepest frame in the call stack
         tb_deep = exc_tb
         while tb_deep.tb_next:
             tb_deep = tb_deep.tb_next
 
-        # 取出对应的 frame
+        # Get the corresponding frame
         frame_deep = tb_deep.tb_frame
 
-        print(f"Starting WebPdb post_mortem server on port {port}...")
-        print(f"Open http://0.0.0.0:{port}/ in browser to debug.")
+        logger.info(f"Starting WebPdb post_mortem server on port {port}...")
+        logger.info(f"Open http://0.0.0.0:{port}/ in browser to debug.")
 
-        # 初始化并启动 post-mortem
+        # Initialize and start post-mortem
         debugger = WebPdb(port=port)
-        debugger.reset()                       # 重置老状态
-        debugger.interaction(frame_deep, tb_deep)  # 从最深帧开始调试
+        debugger.reset()
+        debugger.interaction(frame_deep, tb_deep)
     
-    @staticmethod
-    def blocking_console_post_mortem(rank=0):
+    @classmethod
+    def blocking_console_post_mortem(cls, rank=0):
         """
         Start an in-process pdb console and block execution.
         
@@ -190,22 +425,23 @@ class Debugger:
         """
         frame, tb = Debugger._deep_tb()
         if tb is None:
-            print("No traceback to debug")
+            logger.error("No traceback to debug")
             return
             
         if Debugger.debug_mode == 'socket':
             # Use socket-based debugging
-            print(f"Starting socket-based debugging for rank {rank}...")
+            logger.info(f"Starting socket-based debugging for rank {rank}...")
             
-            logger.error(f"Error occured at [rank:{rank}], using 'nc -U {SOCK_PATH}.{rank}' to connect to the debugger.")
-            p = pdb.Pdb(**get_socket_pdb_params(rank=rank))
+            logger.error(f"Error occurred at [rank:{rank}]: '{cls.exception.__class__.__name__}({cls.exception})'")
+            p, socket_path = pdb.Pdb(**get_socket_pdb_params(rank=rank))
+            logger.info(f"Connection established on {socket_path}")
             p.prompt = f'(rank-{rank}-pdb) '
         else:
             # Use standard console debugging
             p = pdb.Pdb()
             if rank != 0:
+                logger.info(f"Rank {rank} has blocked execution for debugging.")
                 while True:
-                    # logger.info(f"Rank {rank} has blocked execution for debugging. ")
                     pass
             
         p.reset()
@@ -218,29 +454,43 @@ class Debugger:
             def wrapper(*args, **kwargs):
                 try:
                     return func(*args, **kwargs)
-                except Exception:
+                except Exception as e:
                     # Trigger if env var or manual flag
                     if not cls.debug_flag:
                         raise
+                    
+                    logger.error(f"Exception caught in {func.__name__}:")
                     traceback.print_exc()
+                    cls.exception = e
+                    
                     rank = 0
                     if _dist_available and dist.is_initialized():
                         rank = dist.get_rank()
+                        logger.debug(f"Detected distributed environment, rank: {rank}")
                         
                     # Handle different debug modes
                     if rank == 0:
+                        logger.info("Entering ipdb post_mortem debugger...")
                         ipdb.post_mortem()
                     else:
                         if cls.debug_mode == 'web':
                             port = cls.base_port + rank
+                            logger.info(f"Rank {rank} entering web debugger on port {port}")
                             cls.web_post_mortem(port=port)
                         elif cls.debug_mode == 'socket':
-                            # Use socket-based or console-based debugging
+                            logger.info(f"Rank {rank} entering socket-based debugger")
                             cls.blocking_console_post_mortem(rank=rank)
                         else:
                             # Default fallback to web post-mortem
                             port = cls.base_port + rank
+                            logger.info(f"Rank {rank} entering web debugger (fallback) on port {port}")
                             cls.web_post_mortem(port=port)
+                    
+                    # Clear the debugging flag when done
+                    if _dist_available and dist.is_initialized():
+                        coord = get_debug_coordinator()
+                        coord.set_debugging(rank, False)
+                    
                     raise
             return wrapper
         return decorator
@@ -251,18 +501,35 @@ def main():
     parser.add_argument('--mode', choices=['hello', 'error', 'distributed_error'], default='hello')
     parser.add_argument('--debug', action='store_true', help='Enable debug manually')
     parser.add_argument('--name', type=str, default='World')
+    parser.add_argument('--log_level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+                       default='INFO', help='Set logging level')
     args = parser.parse_args()
 
-    # Manual override
+    # Set up logging
+    log_level = getattr(logging, args.log_level)
+    rank = None
+    if _dist_available and args.mode == 'distributed_error':
+        # For distributed mode, try to get rank from env
+        if 'RANK' in os.environ:
+            rank = int(os.environ['RANK'])
+    setup_logging(level=log_level, rank=rank)
+
+    # Manual override for debug flag
     if args.debug:
         Debugger.debug_flag = True
+        logger.info("Debug mode enabled via command line flag")
+    elif Debugger.debug_flag:
+        logger.info("Debug mode enabled via environment variable")
+    else:
+        logger.info("Debug mode disabled. Use --debug or set IPDB_DEBUG=1 to enable.")
 
     @Debugger.on_error()
     def hello(name):
-        print(f"Hello, {name}!")
+        logger.info(f"Hello, {name}!")
 
     @Debugger.on_error()
     def error():
+        logger.warning("About to generate a test error")
         raise RuntimeError("Test error for Debugger")
 
     @Debugger.on_error()
@@ -270,31 +537,46 @@ def main():
         if _dist_available and dist.is_initialized():
             dist.barrier()
             rank = dist.get_rank()
+            logger.info(f"Running on rank {rank}")
         else:
             rank = 0
+        logger.warning(f"About to generate an error on rank {rank}")
         raise RuntimeError(f"Error on rank {rank}")
 
     # Distributed init for torchrun
     if args.mode == 'distributed_error' and _dist_available:
         backend = 'nccl' if torch.cuda.is_available() else 'gloo'
         try:
+            logger.debug(f"Initializing process group with backend: {backend}")
             dist.init_process_group(backend=backend)
+            # Update rank now that we're initialized
+            rank = dist.get_rank()
+            setup_logging(level=log_level, rank=rank)
+            logger.info(f"Process group initialized, rank: {rank}, world size: {dist.get_world_size()}")
         except ValueError as e:
-            print(f"Failed to init process group: {e}\n"
-                  "Set MASTER_ADDR, MASTER_PORT, WORLD_SIZE, RANK env vars or specify init_method.")
+            logger.error(f"Failed to init process group: {e}")
+            logger.error("Set MASTER_ADDR, MASTER_PORT, WORLD_SIZE, RANK env vars or specify init_method.")
             return
 
     # Dispatch
     if args.mode == 'hello':
         hello(args.name)
     elif args.mode == 'error':
-        error()
+        try:
+            error()
+        except Exception as e:
+            logger.error(f"Error caught in main: {e}")
     else:
-        distributed_error()
+        try:
+            distributed_error()
+        except Exception as e:
+            logger.error(f"Error caught in main: {e}")
 
     # Cleanup
     if args.mode == 'distributed_error' and _dist_available and dist.is_initialized():
+        logger.debug("Cleaning up process group")
         dist.destroy_process_group()
+        logger.info("Process group destroyed")
 
 if __name__ == '__main__':
     main()
