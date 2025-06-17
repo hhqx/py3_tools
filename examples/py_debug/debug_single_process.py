@@ -4,7 +4,7 @@ Single Process Debug Example
 
 This script demonstrates how to use the Debugger utility in a single-process context.
 It shows how to:
-1. Decorate functions with @Debugger.on_error()
+1. Decorate functions with @Debugger.attach_on_error()
 2. Trigger debugging through environment variables or command line flags
 3. Handle and debug exceptions interactively
 4. Use context manager for debugging specific code blocks
@@ -65,19 +65,19 @@ def main():
     
     # Define example functions with debug support
     
-    @Debugger.on_error()
+    @Debugger.attach_on_error()
     def hello_function(name):
         """Simple greeting function."""
         logger.info(f"Hello, {name}! Debug example is ready.")
         return f"Hello, {name}!"
     
-    @Debugger.on_error()
+    @Debugger.attach_on_error()
     def error_function():
         """Function that raises a runtime error."""
         logger.warning("About to raise an error...")
         raise RuntimeError("This is a test error")
     
-    @Debugger.on_error()
+    @Debugger.attach_on_error()
     def math_error_function():
         """Function with a division by zero error."""
         logger.warning("About to perform division by zero...")

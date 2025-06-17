@@ -93,7 +93,7 @@ def main():
     logger.info(f"Initialized process group: {args.backend}, world_size={world_size}, timeout={args.timeout}s")
 
     # Example functions with debugging
-    @Debugger.on_error()
+    @Debugger.attach_on_error()
     def process_tensor():
         """Creates a tensor and performs operations based on rank."""
         # Each rank creates a tensor

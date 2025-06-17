@@ -171,7 +171,11 @@ class Debugger:
     debug_flag = os.getenv('IPDB_DEBUG', '').lower() in ('1', 'true', 'yes')
     
     # Debug mode: 'console', 'web', or 'socket'
-    debug_mode = os.getenv('IPDB_MODE', 'console')
+    debug_mode = os.getenv('IPDB_MODE', '').lower()
+    if not debug_mode:
+        debug_mode = 'socket'
+    elif debug_mode not in ('console', 'web', 'socket'):
+        raise ValueError(f"Invalid debug mode: {debug_mode}. Must be one of 'console', 'web', or 'socket'.")
     
     @staticmethod
     def _deep_tb():
@@ -183,8 +187,8 @@ class Debugger:
             tb = tb.tb_next
         return tb.tb_frame, tb
 
-    @staticmethod
-    def web_post_mortem(port=4444):
+    @classmethod
+    def web_post_mortem(cls, port=4444, rank=0):
         """Start a web-based post-mortem debugging session, preserving full stack."""
         # Get current exception info
         exc_type, exc_value, exc_tb = sys.exc_info()
@@ -200,6 +204,7 @@ class Debugger:
         # Get the corresponding frame
         frame_deep = tb_deep.tb_frame
 
+        logger.error(f"Error occurred at [rank:{rank}]: '{cls.exception.__class__.__name__}({cls.exception})'")
         logger.info(f"Starting WebPdb post_mortem server on port {port}...")
         logger.info(f"Open http://0.0.0.0:{port}/ in browser to debug.")
 
@@ -233,8 +238,9 @@ class Debugger:
         else:
             # Use standard console debugging
             p = pdb.Pdb()
+            logger.error(f"Error occurred at [rank:{rank}]: '{cls.exception.__class__.__name__}({cls.exception})'")
             if rank != 0:
-                logger.info(f"Rank {rank} has blocked execution for debugging.")
+                logger.warning(f"Rank {rank} has blocked execution for debugging.")
                 while True:
                     pass
             
@@ -242,46 +248,72 @@ class Debugger:
         p.interaction(frame, tb)
 
     @classmethod
-    def on_error(cls):
-        """Decorator to wrap functions for debug on exception."""
-        def decorator(func):
-            def wrapper(*args, **kwargs):
+    def attach_on_error(cls):
+        """
+        Decorator that wraps functions with exception debugging capabilities.
+        When an exception occurs and debugging is enabled, this decorator will:
+        1. Capture the exception context
+        2. Start an appropriate debugger based on the environment and configuration
+        3. Re-raise the exception after debugging session ends
+        
+        Returns:
+            function: A decorator function that wraps the target function
+        """
+        def exception_debugging_decorator(target_function):
+            """Inner decorator that wraps the target function with exception handling."""
+            if not callable(target_function):
+                raise TypeError(f"Expected a callable, got {type(target_function).__name__}")
+            
+            logger.info(f"Registering {target_function.__name__} for debug on error, using `export IPDB_DEBUG=1` to enable debugger auto attach when error occurs.")
+            
+            def debuggable_function_wrapper(*args, **kwargs):
+                """Wrapper that executes the function and handles exceptions with debugging."""
                 try:
-                    return func(*args, **kwargs)
-                except Exception as e:
-                    # Trigger if env var or manual flag
+                    # Execute the original function
+                    return target_function(*args, **kwargs)
+                except Exception as caught_exception:
+                    # Skip debugging if not enabled via flag or environment variable
                     if not cls.debug_flag:
                         raise
                     
-                    logger.error(f"Exception caught in {func.__name__}:")
+                    # Log the exception details
+                    logger.error(f"Exception caught in {target_function.__name__}:")
                     traceback.print_exc()
-                    cls.exception = e
+                    cls.exception = caught_exception
                     
-                    rank = 0
+                    # Determine process rank for distributed environments
+                    process_rank = 0
                     if _dist_available and dist.is_initialized():
-                        rank = dist.get_rank()
-                        logger.debug(f"Detected distributed environment, rank: {rank}")
-                        
-                    # Handle different debug modes
-                    if rank == 0:
+                        process_rank = dist.get_rank()
+                        logger.debug(f"Detected distributed environment, process rank: {process_rank}")
+                    
+                    # Start appropriate debugger based on rank and debug mode
+                    if process_rank == 0:
+                        # Primary process (rank 0) always uses console debugger
                         logger.info("Entering ipdb post_mortem debugger...")
                         ipdb.post_mortem()
                     else:
+                        # Non-primary processes use the configured debug mode
                         if cls.debug_mode == 'web':
-                            port = cls.base_port + rank
-                            logger.info(f"Rank {rank} entering web debugger on port {port}")
-                            cls.web_post_mortem(port=port)
+                            debugger_port = cls.base_port + process_rank
+                            logger.info(f"Rank {process_rank} entering web debugger on port {debugger_port}")
+                            cls.web_post_mortem(port=debugger_port)
                         elif cls.debug_mode == 'socket':
-                            logger.info(f"Rank {rank} entering socket-based debugger")
-                            cls.blocking_console_post_mortem(rank=rank)
+                            logger.info(f"Rank {process_rank} entering socket-based debugger")
+                            cls.blocking_console_post_mortem(rank=process_rank)
                         else:
-                            # Default fallback to web post-mortem
-                            port = cls.base_port + rank
-                            logger.info(f"Rank {rank} entering web debugger (fallback) on port {port}")
-                            cls.web_post_mortem(port=port)
+                            cls.blocking_console_post_mortem(rank=process_rank)
+                            # # Default fallback to web post-mortem for non-primary ranks
+                            # debugger_port = cls.base_port + process_rank
+                            # logger.info(f"Rank {process_rank} entering web debugger (fallback) on port {debugger_port}")
+                            # cls.web_post_mortem(port=debugger_port)
+                    
+                    # Re-raise the exception after debugging session ends
                     raise
-            return wrapper
-        return decorator
+                
+            return debuggable_function_wrapper
+        
+        return exception_debugging_decorator
 
 
 def main():
@@ -311,16 +343,16 @@ def main():
     else:
         logger.info("Debug mode disabled. Use --debug or set IPDB_DEBUG=1 to enable.")
 
-    @Debugger.on_error()
+    @Debugger.attach_on_error()
     def hello(name):
         logger.info(f"Hello, {name}!")
 
-    @Debugger.on_error()
+    @Debugger.attach_on_error()
     def error():
         logger.warning("About to generate a test error")
         raise RuntimeError("Test error for Debugger")
 
-    @Debugger.on_error()
+    @Debugger.attach_on_error()
     def distributed_error():
         if _dist_available and dist.is_initialized():
             dist.barrier()

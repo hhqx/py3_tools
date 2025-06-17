@@ -28,12 +28,12 @@ pip install -e .[py_debug]
 
 ### 1. 装饰器使用方式
 
-使用 `@Debugger.on_error()` 装饰可能出错的函数，在异常发生时自动进入调试模式：
+使用 `@Debugger.attach_on_error()` 装饰可能出错的函数，在异常发生时自动进入调试模式：
 
 ```python
 from py3_tools.py_debug import Debugger
 
-@Debugger.on_error()
+@Debugger.attach_on_error()
 def my_function():
     x = 10
     y = 0
@@ -66,7 +66,7 @@ from py3_tools.py_debug import Debugger
 dist.init_process_group(backend='nccl')
 rank = dist.get_rank()
 
-@Debugger.on_error()
+@Debugger.attach_on_error()
 def process_data():
     if rank == 1:
         # rank 1 会触发错误，自动启动调试器
@@ -117,7 +117,7 @@ if args.debug:
 if args.debug_mode:
     Debugger.debug_mode = args.debug_mode
 
-@Debugger.on_error()
+@Debugger.attach_on_error()
 def complex_calculation():
     # 一些可能出错的代码
     result = process_data()
@@ -129,7 +129,7 @@ def complex_calculation():
 针对分布式训练，系统会自动处理不同 rank 的调试方式：
 
 ```python
-@Debugger.on_error()
+@Debugger.attach_on_error()
 def train_epoch(model, dataloader):
     for batch in dataloader:
         outputs = model(batch)
@@ -145,7 +145,7 @@ def train_epoch(model, dataloader):
 
 系统支持三种调试模式，可通过环境变量 `IPDB_MODE` 或代码中设置 `Debugger.debug_mode` 来选择：
 
-1. **console (默认)**: 
+1. **console**: 
    - rank 0 使用标准控制台调试，其他 rank 暂停等待
    - 适合单机开发调试
 
@@ -155,7 +155,7 @@ def train_epoch(model, dataloader):
    - 通过浏览器访问 `http://hostname:port/` 进行调试
    - 适合远程开发环境
 
-3. **socket**:
+3. **socket (默认)**:
    - 每个 rank 创建 Unix 套接字 `/tmp/pdb.sock.{rank}`
    - 调试客户端可通过 `nc -U /tmp/pdb.sock.{rank}` 或 `socat - UNIX-CONNECT:/tmp/pdb.sock.{rank}` 连接
    - 适合无 GUI 环境或需要自定义调试客户端的场景
@@ -230,7 +230,7 @@ torchrun --nnodes=1 --nproc_per_node=2 examples/py_debug/debug_multi_torch_rank.
 
 ### 1. 异常捕获流程
 
-装饰器 `@Debugger.on_error()` 包装函数，当异常发生时，根据调试标志和运行环境决定如何处理：
+装饰器 `@Debugger.attach_on_error()` 包装函数，当异常发生时，根据调试标志和运行环境决定如何处理：
 
 ```mermaid
 flowchart TD
@@ -322,7 +322,7 @@ sequenceDiagram
 
 ### 3. 实现机制
 
-- **装饰器模式**: `@Debugger.on_error()` 拦截函数执行并捕获异常
+- **装饰器模式**: `@Debugger.attach_on_error()` 拦截函数执行并捕获异常
 - **环境检测**: 通过环境变量 `IPDB_DEBUG` 或命令行参数 `--debug` 启用调试
 - **分布式感知**: 检测 PyTorch 分布式环境并获取当前进程的 rank
 - **异常现场保护**: 保留完整调用栈和变量信息，不丢失异常上下文

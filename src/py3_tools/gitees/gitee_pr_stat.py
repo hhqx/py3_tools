@@ -434,7 +434,7 @@ def parse_args():
 
 from py3_tools.py_debug.debug_utils import Debugger
 # Debugger.debug_flag = True  # Enable debug mode globally
-@Debugger.on_error()
+@Debugger.attach_on_error()
 def main():
     args = parse_args()
     
