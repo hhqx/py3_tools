@@ -32,47 +32,13 @@ import os
 import sys
 import argparse
 import logging
-import datetime
-import time
-import threading
+import datetime  # Add this import for timedelta
 import torch
 import torch.distributed as dist
-from py3_tools.py_debug.debug_utils import Debugger, setup_logging, get_debug_coordinator
+from py3_tools.py_debug.debug_utils import Debugger, setup_logging
 
 # Get module logger
 logger = logging.getLogger(__name__)
-
-# Safe wrapper for distributed operations
-def safe_collective(func, *args, timeout=600, **kwargs):
-    """
-    Execute collective operations safely when debugging is active.
-    
-    Args:
-        func: The collective function to call (e.g., dist.barrier)
-        timeout: Maximum time to wait if no debugging is active
-        args, kwargs: Arguments to pass to the collective function
-    """
-    # Check if any rank is being debugged
-    coordinator = get_debug_coordinator()
-    debugging_ranks = coordinator.is_debugging()
-    
-    if debugging_ranks:
-        # Some rank is being debugged
-        debug_info = ", ".join(f"rank {r}" for r in debugging_ranks)
-        logger.warning(f"Executing {func.__name__} while ranks are being debugged: {debug_info}")
-        
-        # If we're debugging with socket mode, perform wrapped operation with infinite timeout
-        if 'timeout' in kwargs:
-            logger.debug(f"Removing timeout from {func.__name__} during debugging")
-            # Remove timeout to allow debugging as long as needed
-            kwargs.pop('timeout')
-        
-        # For special timeout parameter
-        if func.__name__ == 'barrier':
-            kwargs['timeout'] = datetime.timedelta(days=365)  # Very long timeout
-    
-    # Execute the collective operation
-    return func(*args, **kwargs)
 
 def main():
     parser = argparse.ArgumentParser(description="PyTorch Distributed Debugging Example")
@@ -90,8 +56,6 @@ def main():
                        default='INFO', help='Set logging level')
     parser.add_argument('--timeout', type=int, default=600,
                        help='Timeout in seconds for distributed operations (default: 10 minutes)')
-    parser.add_argument('--safe_mode', action='store_true', default=True,
-                       help='Use safe collective operations with debug awareness')
     args = parser.parse_args()
 
     # Initialize the distributed environment (torchrun should have set the env variables)
@@ -125,11 +89,9 @@ def main():
 
     # Get distributed info
     world_size = dist.get_world_size()
+
     logger.info(f"Initialized process group: {args.backend}, world_size={world_size}, timeout={args.timeout}s")
 
-    # Start debug watchdog thread for monitoring debugging ranks
-    start_debug_watchdog(world_size)
-    
     # Example functions with debugging
     @Debugger.on_error()
     def process_tensor():
@@ -142,10 +104,7 @@ def main():
         
         # Synchronize all processes
         logger.debug("Synchronizing processes with barrier()")
-        if args.safe_mode:
-            safe_collective(dist.barrier, timeout=datetime.timedelta(seconds=args.timeout))
-        else:
-            dist.barrier(timeout=datetime.timedelta(seconds=args.timeout))
+        dist.barrier()
         
         # The specified ranks will throw an error
         if rank in args.fail_ranks:
@@ -166,12 +125,9 @@ def main():
             
         # Perform a collective operation
         logger.debug("Performing all_reduce operation")
-        if args.safe_mode:
-            safe_collective(dist.all_reduce, tensor, op=dist.ReduceOp.SUM)
-        else:
-            dist.all_reduce(tensor, op=dist.ReduceOp.SUM, timeout=datetime.timedelta(seconds=args.timeout))
-            
+        dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
         logger.info(f"After all_reduce: {tensor}")
+        
         return tensor
 
     logger.debug("Starting first tensor operation")
@@ -196,36 +152,6 @@ def main():
         dist.destroy_process_group()
         logger.info("Process group destroyed")
 
-def start_debug_watchdog(world_size):
-    """Start a watchdog thread to monitor debugging ranks."""
-    def watchdog_thread():
-        coordinator = get_debug_coordinator(world_size)
-        
-        while True:
-            try:
-                debugging_ranks = coordinator.is_debugging()
-                if debugging_ranks:
-                    debug_info = []
-                    for rank, info in debugging_ranks.items():
-                        if isinstance(info, dict) and 'debug_mode' in info:
-                            mode = info.get('debug_mode', 'unknown')
-                            debug_info.append(f"rank {rank} ({mode})")
-                        else:
-                            debug_info.append(f"rank {rank}")
-                    
-                    if debug_info:
-                        logger.info(f"Debugging in progress: {', '.join(debug_info)}")
-                
-                time.sleep(5)  # Check every 5 seconds
-            except:
-                # Handle any exceptions in the watchdog thread
-                pass
-    
-    # Start the watchdog thread
-    thread = threading.Thread(target=watchdog_thread, daemon=True)
-    thread.start()
-    return thread
-
 def init_process_group(backend, timeout=600):
     """Initialize the distributed process group.
     
@@ -239,12 +165,6 @@ def init_process_group(backend, timeout=600):
     # Check if we're using torchrun with the required env vars set
     required_vars = ['RANK', 'WORLD_SIZE', 'MASTER_ADDR', 'MASTER_PORT']
     if all(var in os.environ for var in required_vars):
-        world_size = int(os.environ['WORLD_SIZE'])
-        job_id = f"{os.environ['MASTER_ADDR']}_{os.environ['MASTER_PORT']}"
-        
-        # Initialize debug coordinator
-        get_debug_coordinator(world_size=world_size, job_id=job_id)
-        
         logger.debug(f"Found distributed environment variables, initializing with {backend} backend (timeout: {timeout}s)")
         dist.init_process_group(backend=backend, timeout=timeout_delta)
     else:
