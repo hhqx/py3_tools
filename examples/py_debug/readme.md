@@ -55,6 +55,7 @@ from py3_tools.py_debug import Debugger
 
 @Debugger.attach_on_error()
 def risky_operation():
+    # 任何可能抛异常的逻辑
     result = 1 / 0  # 故意制造异常
 
 if __name__ == "__main__":
@@ -87,7 +88,7 @@ ZeroDivisionError: division by zero
 🐞 Entering ipdb debugger...
 > your_script.py(6)risky_operation()
       5     # 任何可能抛异常的逻辑
-----> 6     result = 1 / 0
+----> 6     result = 1 / 0  # 故意制造异常
       7 
 
 ipdb> p locals()
@@ -153,7 +154,7 @@ nc -U /tmp/pdb.sock.1
 ```
 
 <details>
-<summary>📌 点击展开 Socket 调试日志示例</summary>
+<summary>📌 点击展开 Socket 调试日志示例 (rank 1)</summary>
 
 ```log
 📌 2023-07-15 11:04:23 | ERROR | Exception caught:
@@ -197,6 +198,122 @@ from py3_tools.py_debug import Debugger
 def critical_function():
     ...
 ```
+
+
+### 单进程调试示例
+
+```bash
+export IPDB_DEBUG=1
+python examples/py_debug/debug_single_process.py --mode math_error --debug
+```
+
+**输出结果:**
+<details>
+<summary>📌 点击展开单进程调试日志</summary>
+
+```log
+$ python examples/py_debug/debug_single_process.py --mode math_error --debug
+2025-06-17 19:42:53 - INFO - __main__ - Debugging enabled via command line flag
+2025-06-17 19:42:53 - INFO - py3_tools.py_debug.debug_utils - Registering hello_function for debug on error, using `export IPDB_DEBUG=1` to enable debugger auto attach when error occurs.
+2025-06-17 19:42:53 - INFO - py3_tools.py_debug.debug_utils - Registering error_function for debug on error, using `export IPDB_DEBUG=1` to enable debugger auto attach when error occurs.
+2025-06-17 19:42:53 - INFO - py3_tools.py_debug.debug_utils - Registering math_error_function for debug on error, using `export IPDB_DEBUG=1` to enable debugger auto attach when error occurs.
+2025-06-17 19:42:53 - WARNING - __main__ - About to perform division by zero...
+2025-06-17 19:42:53 - ERROR - py3_tools.py_debug.debug_utils - Exception caught in math_error_function:
+Traceback (most recent call last):
+  File "/home/hqx/myprojects/py_tools/src/py3_tools/py_debug/debug_utils.py", line 273, in debuggable_function_wrapper
+    return target_function(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/hqx/myprojects/py_tools/examples/py_debug/debug_single_process.py", line 86, in math_error_function
+    result = x / y  # This will raise ZeroDivisionError
+             ~~^~~
+ZeroDivisionError: division by zero
+2025-06-17 19:42:53 - INFO - py3_tools.py_debug.debug_utils - Entering ipdb post_mortem debugger...
+> /home/hqx/myprojects/py_tools/examples/py_debug/debug_single_process.py(86)math_error_function()
+     85         y = 0
+---> 86         result = x / y  # This will raise ZeroDivisionError
+     87         return result
+
+ipdb> p x, y
+(10, 0)
+ipdb> y = 2
+ipdb> p x / y
+5.0
+ipdb> q  # 退出调试器
+```
+
+</details>
+
+### 多进程调试示例
+
+```bash
+export IPDB_DEBUG=1
+export IPDB_MODE=socket
+torchrun --nnodes=1 --nproc_per_node=3 examples/py_debug/debug_multi_torch_rank.py --fail_ranks 1
+
+# 新建terminal，连接到 rank 1 的调试器
+nc -U /tmp/pdb.sock.1
+```
+
+**Rank 0 终端上的日志:**
+
+<details>
+<summary>📌 点击展开 rank 0 调试日志</summary>
+
+```log
+$ export IPDB_DEBUG=1
+export IPDB_MODE=socket
+torchrun --nnodes=1 --nproc_per_node=3 examples/py_debug/debug_multi_torch_rank.py --fail_ranks 1
+W0617 19:47:35.974000 3534324 site-packages/torch/distributed/run.py:766] 
+W0617 19:47:35.974000 3534324 site-packages/torch/distributed/run.py:766] *****************************************
+W0617 19:47:35.974000 3534324 site-packages/torch/distributed/run.py:766] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0617 19:47:35.974000 3534324 site-packages/torch/distributed/run.py:766] *****************************************
+2025-06-17 19:47:38 - [rank:1] INFO - __main__ - Debugging enabled via environment variable
+2025-06-17 19:47:38 - [rank:1] INFO - __main__ - Initialized process group: gloo, world_size=3, timeout=600s
+2025-06-17 19:47:38 - [rank:1] INFO - py3_tools.py_debug.debug_utils - Registering process_tensor for debug on error, using `export IPDB_DEBUG=1` to enable debugger auto attach when error occurs.
+2025-06-17 19:47:38 - [rank:0] INFO - __main__ - Debugging enabled via environment variable
+2025-06-17 19:47:38 - [rank:0] INFO - __main__ - Initialized process group: gloo, world_size=3, timeout=600s
+2025-06-17 19:47:38 - [rank:0] INFO - py3_tools.py_debug.debug_utils - Registering process_tensor for debug on error, using `export IPDB_DEBUG=1` to enable debugger auto attach when error occurs.
+2025-06-17 19:47:38 - [rank:2] INFO - __main__ - Debugging enabled via environment variable
+2025-06-17 19:47:38 - [rank:2] INFO - __main__ - Initialized process group: gloo, world_size=3, timeout=600s
+2025-06-17 19:47:38 - [rank:2] INFO - py3_tools.py_debug.debug_utils - Registering process_tensor for debug on error, using `export IPDB_DEBUG=1` to enable debugger auto attach when error occurs.
+2025-06-17 19:47:38 - [rank:1] WARNING - __main__ - About to cause an error of type 'indexerror'...
+2025-06-17 19:47:38 - [rank:1] ERROR - py3_tools.py_debug.debug_utils - Exception caught in process_tensor:
+Traceback (most recent call last):
+  File "/home/hqx/myprojects/py_tools/src/py3_tools/py_debug/debug_utils.py", line 273, in debuggable_function_wrapper
+    return target_function(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/hqx/myprojects/py_tools/examples/py_debug/debug_multi_torch_rank.py", line 116, in process_tensor
+    bad_value = tensor[20]  # This will raise an IndexError
+                ~~~~~~^^^^
+IndexError: index 20 is out of bounds for dimension 0 with size 10
+2025-06-17 19:47:38 - [rank:1] INFO - py3_tools.py_debug.debug_utils - Rank 1 entering socket-based debugger
+2025-06-17 19:47:38 - [rank:1] INFO - py3_tools.py_debug.debug_utils - Starting socket-based debugging for rank 1...
+2025-06-17 19:47:38 - [rank:1] ERROR - py3_tools.py_debug.debug_utils - Error occurred at [rank:1]: 'IndexError(index 20 is out of bounds for dimension 0 with size 10)'
+2025-06-17 19:47:38 - [rank:1] INFO - py3_tools.py_debug.debug_utils - Waiting for debugger client to connect on /tmp/pdb.sock.1, use 'nc -U /tmp/pdb.sock.1' to connect to the debugger.
+```
+
+</details>
+
+**Rank 1 上的调试会话:**
+
+<details>
+<summary>📌 点击展开 rank 1 调试日志</summary>
+
+
+```log
+$ nc -U /tmp/pdb.sock.1
+> /home/hqx/myprojects/py_tools/examples/py_debug/debug_multi_torch_rank.py(116)process_tensor()
+-> bad_value = tensor[20]  # This will raise an IndexError
+(rank-1-pdb)  p tensor
+tensor([1., 1., 1., 1., 1., 1., 1., 1., 1., 1.])
+(rank-1-pdb) p tensor.shape
+torch.Size([10])
+(rank-1-pdb) p tensor[5]
+tensor(1.)
+(rank-1-pdb) q
+```
+
+</details>
 
 ---
 
