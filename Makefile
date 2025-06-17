@@ -22,5 +22,11 @@ build:
 publish:
 	python -m twine upload dist/*
 
+push:
+	git push origin master:master
+
+reinstall:
+	pip install --upgrade --force-reinstall dist/*.whl
+
 clean:
 	rm -rf build/ dist/ *.egg-info .pytest_cache .mypy_cache .coverage htmlcov

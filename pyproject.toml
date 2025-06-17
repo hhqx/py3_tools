@@ -5,41 +5,83 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "py3_tools_hqx"
 version = "1.1.0"
-authors = [
-    {name = "hhqx", email = "your.email@example.com"},
-]
 description = "Personal tools collection for various utilities"
 readme = "README.md"
 requires-python = ">=3.7"
+authors = [
+    {name = "hhqx", email = "your.email@example.com"},
+]
+maintainers = [
+    {name = "hhqx", email = "your.email@example.com"}
+]
+license = {text = "MIT"}
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "web-pdb",
-    "ipdb",
+    "ipdb>=0.13.0",
+    "web-pdb>=1.5.0",
 ]
 
 [project.urls]
 "Homepage" = "https://github.com/hhqx/py3_tools"
 "Bug Tracker" = "https://github.com/hhqx/py3_tools/issues"
+"Documentation" = "https://github.com/hhqx/py3_tools/tree/master/README.md"
 
 [project.optional-dependencies]
+# Development tools
 dev = [
-    "pytest",
-    "black",
-    "flake8",
-    "mypy",
-    'build'
+    # Testing
+    "pytest>=7.0.0",
+    "pytest-cov",
+    "pytest-mock",
+    
+    # Formatting and linting
+    "black>=23.0.0",
+    "flake8>=6.0.0",
+    "isort>=5.0.0",
+    "mypy>=1.0.0",
+    
+    # Building and packaging
+    "build>=0.10.0",
+    "twine>=4.0.0",
+    
+    # Documentation
+    "sphinx",
+    "sphinx-rtd-theme"
 ]
+
+# Debugging tools
 py_debug = [
-    "torch",
-    "numpy"
+    # Core debugging dependencies
+    "ipdb>=0.13.0",
+    "web-pdb>=1.5.0",
+    
+    # Distributed computing support
+    "torch>=1.12.0",
+    "numpy>=1.20.0",
+    
+    # Socket debugging
+    "socat",
+    
+    # Profiling and tracing
+    "pyinstrument",
+    "memory_profiler"
 ]
+
+# Gitee API tools
 gitee = [
-    "requests",
-    "pandas"
+    "requests>=2.28.0",
+    "pandas>=1.5.0",
+    "beautifulsoup4>=4.11.0",
+    "pyyaml>=6.0"
+]
+
+# Add a full option that installs everything
+full = [
+    "py3_tools_hqx[dev,py_debug,gitee]"
 ]
 
 [tool.setuptools]
@@ -48,4 +90,37 @@ packages = {find = {where = ["src"]}}
 
 [tool.black]
 line-length = 100
-target-version = ["py37", "py38", "py39", "py310","py311"]
+target-version = ["py37", "py38", "py39", "py310", "py311"]
+include = '\.pyi?$'
+exclude = '''
+/(
+    \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 100
+multi_line_output = 3
+include_trailing_comma = true
+
+[tool.mypy]
+python_version = "3.7"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+addopts = "--cov=py3_tools --cov-report=xml --cov-report=term"
