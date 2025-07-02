@@ -1,6 +1,6 @@
 # py3_tools
 
-个人常用 Python 工具集，包含调试、Gitee PR 统计等实用模块，适用于开发、数据分析和分布式调试等场景。
+个人常用 Python 工具集，包含调试、Gitee PR 统计及 AI 辅助开发示例，适用于开发、数据分析和分布式调试等场景。
 
 ## 工具目录
 
@@ -8,6 +8,7 @@
 |------------------|-------------------------------|-------------------------------------|
 | py_debug         | Python 调试增强工具，支持单进程和分布式调试 | [py_debug 使用说明](https://github.com/hhqx/py3_tools/tree/master/examples/py_debug/readme.md) |
 | gitee_pr_utils   | Gitee PR 查询与统计工具        | [gitee_pr_stat 使用说明](https://github.com/hhqx/py3_tools/tree/master/examples/gitee/readme.md) |
+| test_mha_attn    | 基于 AI 生成的 MultiheadAttention 替换系统 | [AI 辅助开发示例](https://github.com/hhqx/py3_tools/tree/master/examples/test_mha/readme.md) |
 
 ## 安装
 
@@ -25,6 +26,7 @@ pip install -e .[dev,py_debug,gitee]
 - [单进程调试工具示例](https://github.com/hhqx/py3_tools/tree/master/examples/py_debug/readme.md#单进程调试)，[debug_single_process.py](https://github.com/hhqx/py3_tools/tree/master/examples/py_debug/debug_single_process.py)
 - [分布式调试示例](https://github.com/hhqx/py3_tools/tree/master/examples/py_debug/readme.md#分布式调试脚本), [debug_multi_torch_rank.py](https://github.com/hhqx/py3_tools/tree/master/examples/py_debug/debug_multi_torch_rank.py)
 - [Gitee PR 统计示例](https://github.com/hhqx/py3_tools/tree/master/examples/gitee/readme.md)
+- [AI 辅助开发示例](https://github.com/hhqx/py3_tools/tree/master/examples/test_mha/readme.md)
 
 
 ## License
