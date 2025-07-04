@@ -79,6 +79,8 @@ logger = logging.getLogger(__name__)
 # Socket-based debugging configuration
 SOCK_PATH = '/tmp/pdb.sock'
 
+__all__ = ['Debugger', 'setup_logging', 'CustomPdb', 'set_trace', 'breakpoint']
+
 def setup_logging(level=logging.INFO, rank=None):
     """Configure logging with appropriate format and level.
     
@@ -315,6 +317,68 @@ class Debugger:
         
         return exception_debugging_decorator
 
+    @staticmethod
+    def set_trace(ranks=None):
+        """
+        Set a breakpoint at the calling site across multiple ranks.
+        
+        For multi-rank debugging:
+        - First rank in the list uses ipdb
+        - Other ranks use websocket or socket-based debugging
+        
+        Args:
+            ranks (list, int, optional): List of ranks or single rank to activate debugger on.
+                                         If None, activates on all ranks.
+        """
+        # Skip if debugging is not enabled
+        if not Debugger.debug_flag:
+            return
+            
+        # Get current process rank
+        current_rank = 0
+        if _dist_available and dist.is_initialized():
+            current_rank = dist.get_rank()
+            
+        # Convert single rank to list
+        if ranks is None:
+            ranks = [current_rank]  # Default to current rank only
+        elif isinstance(ranks, int):
+            ranks = [ranks]
+            
+        # Only activate debugger if current rank is in the specified ranks
+        if current_rank not in ranks:
+            return
+            
+        # Determine if this is the first rank in the list
+        is_first_rank = current_rank == ranks[0]
+        
+        # Get the frame where set_trace was called from (one level up)
+        frame = sys._getframe().f_back
+        
+        logger.info(f"Setting trace on rank {current_rank}")
+        
+        if is_first_rank:
+            # Use ipdb for the first rank
+            logger.info(f"Rank {current_rank}: Using ipdb")
+            ipdb.set_trace(frame=frame)
+        elif Debugger.debug_mode == 'web' and _web_pdb_available:
+            # Use web debugger for other ranks
+            port = Debugger.base_port + current_rank
+            logger.info(f"Rank {current_rank}: Starting web debugger on port {port}")
+            debugger = WebPdb(port=port)
+            debugger.set_trace(frame=frame)
+        elif Debugger.debug_mode == 'socket':
+            # Use socket-based debugger
+            logger.info(f"Rank {current_rank}: Starting socket-based debugger")
+            param, socket_path = get_socket_pdb_params(rank=current_rank)
+            p = CustomPdb(**param)
+            p.prompt = f'(rank-{current_rank}-pdb) '
+            logger.info(f"Connection established on {socket_path}")
+            p.set_trace(frame=frame)
+        else:
+            # Fallback to standard pdb
+            logger.info(f"Rank {current_rank}: Using standard pdb")
+            pdb.set_trace(frame=frame)
 
 def main():
     parser = argparse.ArgumentParser(description="Debug utils CLI")
@@ -397,6 +461,10 @@ def main():
         logger.debug("Cleaning up process group")
         dist.destroy_process_group()
         logger.info("Process group destroyed")
+
+
+set_trace = Debugger.set_trace
+breakpoint = Debugger.set_trace
 
 if __name__ == '__main__':
     main()
