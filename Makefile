@@ -16,7 +16,7 @@ typecheck:
 test:
 	pytest
 
-build:
+build: clean
 	python -m build
 
 publish:

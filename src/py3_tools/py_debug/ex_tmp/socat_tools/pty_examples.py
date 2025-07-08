@@ -107,7 +107,7 @@ echo "完成！"
     script_path = "/tmp/interactive_script.sh"
     with open(script_path, 'w') as f:
         f.write(script_content)
-    os.chmod(script_path, 0o755)
+    os.chmod(script_path, 0o750)
     
     # 准备自动响应
     responses = [

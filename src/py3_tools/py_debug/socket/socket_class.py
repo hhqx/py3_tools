@@ -11,11 +11,23 @@ import enum
 import logging
 import tempfile
 import ipdb
+import atexit
 from typing import Optional, Union, Tuple, TextIO, BinaryIO, Dict, Any, Callable
+import uuid
 
 # Configure logger
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+__ALL__ = [
+    'ConnectionType', 'CustomSocketPdb', 
+    'socket_set_trace', 'socket_post_mortem', 
+    'remote_set_trace', 'remote_set_trace_unix',
+    'DEFAULT_SOCK_PATH'
+]
+
+# Define default socket path that can be imported by other modules
+DEFAULT_SOCK_PATH = os.path.join(tempfile.gettempdir(), f'pdb.sock.{os.getpid()}-{str(uuid.uuid4())[-8:]}')
 
 class ConnectionType(enum.Enum):
     """Enumeration of supported connection types for socket debugging."""
@@ -30,6 +42,9 @@ def get_rank() -> int:
         logger.warning("Invalid RANK environment variable, defaulting to -1")
         rank = -1
     return rank
+
+# Global variable to store active debugger instances
+_active_debuggers = {}
 
 class CustomSocketPdb:
     """
@@ -83,6 +98,7 @@ class CustomSocketPdb:
         self.slave_file = None
         self.socket_thread = None
         self.pty_thread = None
+        self.is_active = False
         
         # Store original streams
         self.orig_stdin = sys.stdin
@@ -93,6 +109,11 @@ class CustomSocketPdb:
 
     def start(self) -> None:
         """Start the socket server and set up the debugging environment."""
+        # If already active, just return
+        if self.is_active:
+            logger.debug("Debugger already active, reusing existing connection")
+            return
+
         try:
             # Set up the server based on connection type
             self._setup_server()
@@ -116,6 +137,12 @@ class CustomSocketPdb:
             
             # Give a moment for connections to stabilize
             time.sleep(0.1)
+            
+            # Mark as active
+            self.is_active = True
+            
+            # Register cleanup on exit
+            atexit.register(self.cleanup)
             
         except Exception as e:
             self.cleanup()
@@ -191,7 +218,7 @@ class CustomSocketPdb:
             
             # Make socket file accessible
             try:
-                os.chmod(self.unix_socket_path, 0o777)
+                os.chmod(self.unix_socket_path, 0o750)
             except OSError:
                 logger.warning(f"Could not change permissions of {self.unix_socket_path}")
             
@@ -310,6 +337,12 @@ class CustomSocketPdb:
 
     def cleanup(self) -> None:
         """Clean up resources (pipes, sockets, file descriptors)."""
+        # Skip if not active
+        if not self.is_active:
+            return
+            
+        logger.debug("Cleaning up debugger resources")
+        
         # Restore original streams
         if hasattr(self, 'orig_stdin') and self.orig_stdin:
             sys.stdin = self.orig_stdin
@@ -357,6 +390,27 @@ class CustomSocketPdb:
                 os.unlink(self.unix_socket_path)
             except Exception:
                 pass
+                
+        # Remove from active debuggers
+        key = self._get_instance_key()
+        if key in _active_debuggers:
+            del _active_debuggers[key]
+            
+        # Mark as inactive
+        self.is_active = False
+        
+        # Unregister from atexit
+        try:
+            atexit.unregister(self.cleanup)
+        except Exception:
+            pass
+
+    def _get_instance_key(self) -> str:
+        """Get unique key for this debugger instance based on connection details."""
+        if self.connection_type == ConnectionType.TCP:
+            return f"tcp:{self.host}:{self.port}"
+        else:
+            return f"unix:{self.unix_socket_path}"
 
     def __enter__(self):
         """Support context manager protocol."""
@@ -366,6 +420,48 @@ class CustomSocketPdb:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Clean up resources when exiting context manager."""
         self.cleanup()
+
+
+def get_or_create_debugger(connection_type=ConnectionType.TCP, host='localhost', 
+                           port=5678, unix_socket_path=None) -> CustomSocketPdb:
+    """
+    Get an existing debugger instance or create a new one if none exists.
+    
+    This ensures we don't create multiple debuggers for the same connection.
+    
+    Args:
+        connection_type: Type of connection (TCP or UNIX)
+        host: Host for TCP connections
+        port: Port for TCP connections
+        unix_socket_path: Path for Unix socket
+        
+    Returns:
+        CustomSocketPdb: An existing or new debugger instance
+    """
+    # Generate key for lookup
+    if connection_type == ConnectionType.TCP:
+        key = f"tcp:{host}:{port}"
+    else:
+        if unix_socket_path is None:
+            unix_socket_path = os.path.join(tempfile.gettempdir(), f"debugger_{os.getpid()}.sock")
+        key = f"unix:{unix_socket_path}"
+    
+    # Check if we have an active debugger for this connection
+    if key in _active_debuggers and _active_debuggers[key].is_active:
+        logger.debug(f"Reusing existing debugger for {key}")
+        return _active_debuggers[key]
+    
+    # Create new debugger
+    debugger = CustomSocketPdb(
+        connection_type=connection_type,
+        host=host,
+        port=port,
+        unix_socket_path=unix_socket_path
+    )
+    
+    # Store it for future reuse
+    _active_debuggers[key] = debugger
+    return debugger
 
 
 def socket_set_trace(frame=None, connection_type=ConnectionType.TCP, host='localhost', 
@@ -390,8 +486,8 @@ def socket_set_trace(frame=None, connection_type=ConnectionType.TCP, host='local
     if frame is None:
         frame = sys._getframe().f_back
     
-    # Create and start the debugger
-    debugger = CustomSocketPdb(
+    # Get or create debugger instance
+    debugger = get_or_create_debugger(
         connection_type=connection_type,
         host=host,
         port=port,
@@ -399,9 +495,12 @@ def socket_set_trace(frame=None, connection_type=ConnectionType.TCP, host='local
     )
     
     try:
+        # Start the debugger if not already started
         debugger.start()
     except Exception as e:
+        logger.error(f"Failed to start debugger: {e}")
         debugger.cleanup()
+        return
     
     # Use ipdb with the redirected streams
     ipdb.set_trace(frame=frame)
@@ -433,8 +532,8 @@ def socket_post_mortem(tb=None, connection_type=ConnectionType.TCP, host='localh
     if tb is None:
         raise ValueError("No traceback provided and no exception is being handled")
     
-    # Create and start the debugger
-    debugger = CustomSocketPdb(
+    # Get or create debugger instance
+    debugger = get_or_create_debugger(
         connection_type=connection_type,
         host=host,
         port=port,
@@ -442,13 +541,27 @@ def socket_post_mortem(tb=None, connection_type=ConnectionType.TCP, host='localh
     )
     
     try:
+        # Start the debugger if not already started
         debugger.start()
     except Exception as e:
+        logger.error(f"Failed to start debugger: {e}")
         debugger.cleanup()
+        return
     
     # Use ipdb post_mortem with the redirected streams
     ipdb.post_mortem(tb)
 
+# Ensure all resources are cleaned up at process exit
+def cleanup_all_debuggers():
+    """Clean up all active debuggers when the process exits."""
+    for key, debugger in list(_active_debuggers.items()):
+        try:
+            debugger.cleanup()
+        except Exception as e:
+            logger.debug(f"Error cleaning up debugger {key}: {e}")
+
+# Register the cleanup function
+atexit.register(cleanup_all_debuggers)
 
 def remote_set_trace(host='localhost', port=5678, connection_type=ConnectionType.TCP, 
                 unix_socket_path=None):

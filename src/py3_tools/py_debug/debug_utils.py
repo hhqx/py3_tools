@@ -58,6 +58,7 @@ import logging
 import socket
 import enum
 import tempfile
+import atexit
 from typing import Optional, Union, Callable, Any, Dict, TextIO
 
 # Distributed support
@@ -79,15 +80,14 @@ except ImportError:
 # Configure module-level logger
 logger = logging.getLogger(__name__)
 
-# Socket-based debugging configuration
-SOCK_PATH = '/tmp/pdb.sock'
-
 __all__ = ['Debugger', 'setup_logging', 'CustomPdb', 'set_trace', 'breakpoint', 
-           'ConnectionType', 'CustomSocketPdb']
+           'ConnectionType',]
 
-# Import socket debugging classes if available
+# Import socket debugging classes and constants if available
 try:
-    from py3_tools.py_debug.socket.socket_class import CustomSocketPdb, ConnectionType, socket_set_trace, socket_post_mortem
+    from py3_tools.py_debug.socket.socket_class import (
+        ConnectionType, socket_set_trace, socket_post_mortem, DEFAULT_SOCK_PATH
+    )
     _socket_debugger_available = True
 except ImportError:
     _socket_debugger_available = False
@@ -96,6 +96,8 @@ except ImportError:
         """Connection types for remote debugging."""
         TCP = "tcp"
         UNIX = "unix"
+    # Define fallback DEFAULT_SOCK_PATH
+    DEFAULT_SOCK_PATH = os.path.join(tempfile.gettempdir(), 'pdb.sock')
 
 def setup_logging(level=logging.INFO, rank=None):
     """Configure logging with appropriate format and level.
@@ -123,6 +125,15 @@ def setup_logging(level=logging.INFO, rank=None):
     root_logger.setLevel(level)
     
     return logger
+
+def get_rank() -> int:
+    # Get rank from environment variable, default to -1 if not found or invalid
+    try:
+        rank = int(os.environ.get('RANK', '-1'))
+    except ValueError:
+        logger.warning("Invalid RANK environment variable, defaulting to -1")
+        rank = -1
+    return rank
 
 class CustomPdb(pdb.Pdb):
     """Enhanced PDB with custom prompt."""
@@ -155,30 +166,6 @@ def setup_socket(path):
     server.close()
     return conn
 
-def get_socket_pdb_params(rank=0):
-    """Get parameters for socket-based PDB debugger.
-    
-    Args:
-        rank (int): Process rank for multi-process debugging
-        
-    Returns:
-        dict: Parameters to pass to pdb.Pdb constructor
-    """
-    # Create socket with rank-specific name
-    socket_path = f"{SOCK_PATH}.{rank}"
-    conn = setup_socket(socket_path)
-
-    # Wrap socket connection as file objects
-    conn_r = conn.makefile('r')
-    conn_w = conn.makefile('w')
-
-    # Create parameters dict for pdb
-    debugger_params = {
-        'stdin': conn_r,
-        'stdout': conn_w
-    }
-    return debugger_params, socket_path
-
 
 class Debugger:
     """
@@ -201,6 +188,13 @@ class Debugger:
     socket_port = int(os.getenv('IPDB_PORT', base_port))
     socket_path = os.getenv('IPDB_SOCKET_PATH', None)
     
+    # Use imported DEFAULT_SOCK_PATH instead of hardcoding
+    SOCK_PATH = os.getenv('IPDB_SOCK_PATH', DEFAULT_SOCK_PATH)
+    
+    # rank = get_rank()
+    # if rank <= 0:
+    #     breakpoint()
+    
     @staticmethod
     def _deep_tb():
         """Return the deepest (innermost) frame and traceback."""
@@ -210,6 +204,31 @@ class Debugger:
         while tb.tb_next:
             tb = tb.tb_next
         return tb.tb_frame, tb
+    
+    @classmethod
+    def get_socket_pdb_params(cls, rank=0):
+        """Get parameters for socket-based PDB debugger.
+        
+        Args:
+            rank (int): Process rank for multi-process debugging
+            
+        Returns:
+            dict: Parameters to pass to pdb.Pdb constructor
+        """
+        # Create socket with rank-specific name
+        socket_path = f"{cls.SOCK_PATH}.{rank}"
+        conn = setup_socket(socket_path)
+
+        # Wrap socket connection as file objects
+        conn_r = conn.makefile('r')
+        conn_w = conn.makefile('w')
+
+        # Create parameters dict for pdb
+        debugger_params = {
+            'stdin': conn_r,
+            'stdout': conn_w
+        }
+        return debugger_params, socket_path
 
     @classmethod
     def web_post_mortem(cls, port=4444, rank=0):
@@ -258,7 +277,7 @@ class Debugger:
             if _socket_debugger_available:
                 # Use CustomSocketPdb with proper socket configuration
                 if cls.socket_connection_type == ConnectionType.UNIX:
-                    socket_path = cls.socket_path or f"{SOCK_PATH}.{rank}"
+                    socket_path = cls.socket_path or f"{cls.SOCK_PATH}.{rank}"
                     logger.info(f"Using CustomSocketPdb with Unix socket at {socket_path}")
                     socket_post_mortem(
                         tb=tb,
@@ -277,7 +296,7 @@ class Debugger:
             else:
                 # Fall back to original socket approach if CustomSocketPdb not available
                 logger.warning("CustomSocketPdb not available, falling back to original socket method")
-                param, socket_path = get_socket_pdb_params(rank=rank)
+                param, socket_path = cls.get_socket_pdb_params(rank=rank)
                 p = pdb.Pdb(**param)
                 logger.info(f"Connection established on {socket_path}")
                 p.prompt = f'(rank-{rank}-pdb) '
@@ -314,7 +333,7 @@ class Debugger:
         
         # Configure socket debugger
         if cls.socket_connection_type == ConnectionType.UNIX:
-            socket_path = cls.socket_path or f"{SOCK_PATH}.{rank}"
+            socket_path = cls.socket_path or f"{cls.SOCK_PATH}.{rank}"
             logger.info(f"Starting socket debugger with Unix socket at {socket_path}")
             socket_post_mortem(
                 tb=tb,
@@ -352,11 +371,17 @@ class Debugger:
             
             logger.info(f"Registering {target_function.__name__} for debug on error, using `export IPDB_DEBUG=1` to enable debugger auto attach when error occurs.")
             
+            from bdb import BdbQuit
             def debuggable_function_wrapper(*args, **kwargs):
                 """Wrapper that executes the function and handles exceptions with debugging."""
                 try:
                     # Execute the original function
                     return target_function(*args, **kwargs)
+                except BdbQuit:
+                    # Handle BdbQuit exception gracefully
+                    logger.info(f"{target_function.__name__} was quit by user, skipping debugging.")
+                    # raise
+                    return None
                 except Exception as caught_exception:
                     # Skip debugging if not enabled via flag or environment variable
                     if not cls.debug_flag:
@@ -397,8 +422,8 @@ class Debugger:
         
         return exception_debugging_decorator
 
-    @staticmethod
-    def set_trace(ranks=None):
+    @classmethod
+    def set_trace(cls, ranks=None):
         """
         Set a breakpoint at the calling site across multiple ranks.
         
@@ -493,7 +518,7 @@ class Debugger:
             if _socket_debugger_available:
                 # Use CustomSocketPdb with proper socket configuration
                 if Debugger.socket_connection_type == ConnectionType.UNIX:
-                    socket_path = Debugger.socket_path or f"{SOCK_PATH}.{current_rank}"
+                    socket_path = Debugger.socket_path or f"{cls.SOCK_PATH}.{current_rank}"
                     logger.info(f"Using CustomSocketPdb with Unix socket at {socket_path}")
                     socket_set_trace(
                         frame=frame,
@@ -512,7 +537,7 @@ class Debugger:
             else:
                 # Fall back to original socket approach if CustomSocketPdb not available
                 logger.warning("CustomSocketPdb not available, falling back to original socket method")
-                param, socket_path = get_socket_pdb_params(rank=current_rank)
+                param, socket_path = cls.get_socket_pdb_params(rank=current_rank)
                 p = CustomPdb(**param)
                 p.prompt = f'(rank-{current_rank}-pdb) '
                 logger.info(f"Connection established on {socket_path}")
@@ -521,6 +546,22 @@ class Debugger:
             # Fallback to standard pdb
             logger.info(f"Rank {current_rank}: Using standard pdb")
             pdb.set_trace(frame=frame)
+
+# Ensure all socket resources are cleaned up on exit
+def cleanup_sockets():
+    """Clean up any remaining socket files on program exit."""
+    # Clean up socket files based on naming pattern
+    import glob
+    for socket_path in glob.glob(f"{Debugger.SOCK_PATH}.*"):
+        if os.path.exists(socket_path) and socket_path.endswith('.sock'):
+            try:
+                os.unlink(socket_path)
+                logger.debug(f"Cleaned up socket file: {socket_path}")
+            except Exception as e:
+                logger.debug(f"Error cleaning up socket file {socket_path}: {e}")
+
+# Register cleanup function
+atexit.register(cleanup_sockets)
 
 def main():
     parser = argparse.ArgumentParser(description="Debug utils CLI")

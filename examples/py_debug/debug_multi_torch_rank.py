@@ -9,42 +9,42 @@ during debugging.
 Basic Usage:
   # Run with 2 processes:
   export IPDB_DEBUG=1
-  torchrun --nnodes=1 --nproc_per_node=2 debug_multi_torch_rank.py
+  torchrun --nnodes=1 --nproc_per_node=2 examples/py_debug/debug_multi_torch_rank.py
 
   # Or manually specify which ranks should fail:
-  torchrun --nnodes=1 --nproc_per_node=3 debug_multi_torch_rank.py --fail_ranks 0 1 --debug
+  torchrun --nnodes=1 --nproc_per_node=3 examples/py_debug/debug_multi_torch_rank.py --fail_ranks 0 1 --debug
 
 Breakpoint Usage Examples:
 
   1. Debug specific ranks at tensor creation:
      export IPDB_DEBUG=1
-     torchrun --nnodes=1 --nproc_per_node=3 debug_multi_torch_rank.py \
+     torchrun --nnodes=1 --nproc_per_node=3 examples/py_debug/debug_multi_torch_rank.py \
        --breakpoint_ranks 0 2 --breakpoint_mode after_tensor
 
   2. Debug before all_reduce operation:
      export IPDB_DEBUG=1
-     torchrun --nnodes=1 --nproc_per_node=4 debug_multi_torch_rank.py \
+     torchrun --nnodes=1 --nproc_per_node=4 examples/py_debug/debug_multi_torch_rank.py \
        --breakpoint_ranks 1 3 --breakpoint_mode before_allreduce
 
   3. Debug only the rank that will fail:
      export IPDB_DEBUG=1
-     torchrun --nnodes=1 --nproc_per_node=3 debug_multi_torch_rank.py \
+     torchrun --nnodes=1 --nproc_per_node=3 examples/py_debug/debug_multi_torch_rank.py \
        --fail_ranks 2 --breakpoint_mode before_error
 
   4. Step-by-step debugging with multiple breakpoints:
      export IPDB_DEBUG=1
-     torchrun --nnodes=1 --nproc_per_node=2 debug_multi_torch_rank.py \
+     torchrun --nnodes=1 --nproc_per_node=2 examples/py_debug/debug_multi_torch_rank.py \
        --step_debug --breakpoint_ranks 0 1
 
   5. Debug all stages with specific ranks:
      export IPDB_DEBUG=1
-     torchrun --nnodes=1 --nproc_per_node=3 debug_multi_torch_rank.py \
+     torchrun --nnodes=1 --nproc_per_node=3 examples/py_debug/debug_multi_torch_rank.py \
        --breakpoint_ranks 0 2 --breakpoint_mode all
 
 Socket-based Debugging:
   # Specify debug mode (console, web, socket):
   export IPDB_MODE=socket
-  torchrun --nnodes=1 --nproc_per_node=3 debug_multi_torch_rank.py \
+  torchrun --nnodes=1 --nproc_per_node=3 examples/py_debug/debug_multi_torch_rank.py \
     --fail_ranks 0,2 --breakpoint_ranks 1 --breakpoint_mode before_error
   
   # Connect to the socket debugger:
@@ -83,14 +83,14 @@ Advanced Examples:
   export IPDB_CONNECTION_TYPE=tcp
   export IPDB_HOST=0.0.0.0
   export IPDB_PORT=5678
-  torchrun --nnodes=1 --nproc_per_node=2 debug_multi_torch_rank.py \
+  torchrun --nnodes=1 --nproc_per_node=2 examples/py_debug/debug_multi_torch_rank.py \
     --breakpoint_ranks 1 --debug
 
   # Then connect with: socat $(tty),raw,echo=0 TCP:localhost:5679  # port = 5678 + rank
 
   # Debug with web interface:
   export IPDB_MODE=web
-  torchrun --nnodes=1 --nproc_per_node=2 debug_multi_torch_rank.py \
+  torchrun --nnodes=1 --nproc_per_node=2 examples/py_debug/debug_multi_torch_rank.py \
     --breakpoint_ranks 1 --debug
   # Open http://localhost:4445 in browser (port = 4444 + rank)
 
