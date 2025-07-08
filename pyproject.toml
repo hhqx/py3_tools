@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "py3_tools_hqx"
-version = "1.1.2"
+version = "1.2.0"
 description = "Personal tools collection for various utilities"
 readme = "README.md"
 requires-python = ">=3.7"

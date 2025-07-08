@@ -6,7 +6,7 @@ This script demonstrates how to use the Debugger utility in a multi-process
 PyTorch distributed environment. It shows how different ranks are handled
 during debugging.
 
-Usage:
+Basic Usage:
   # Run with 2 processes:
   export IPDB_DEBUG=1
   torchrun --nnodes=1 --nproc_per_node=2 debug_multi_torch_rank.py
@@ -14,27 +14,102 @@ Usage:
   # Or manually specify which ranks should fail:
   torchrun --nnodes=1 --nproc_per_node=3 debug_multi_torch_rank.py --fail_ranks 0 1 --debug
 
+Breakpoint Usage Examples:
+
+  1. Debug specific ranks at tensor creation:
+     export IPDB_DEBUG=1
+     torchrun --nnodes=1 --nproc_per_node=3 debug_multi_torch_rank.py \
+       --breakpoint_ranks 0 2 --breakpoint_mode after_tensor
+
+  2. Debug before all_reduce operation:
+     export IPDB_DEBUG=1
+     torchrun --nnodes=1 --nproc_per_node=4 debug_multi_torch_rank.py \
+       --breakpoint_ranks 1 3 --breakpoint_mode before_allreduce
+
+  3. Debug only the rank that will fail:
+     export IPDB_DEBUG=1
+     torchrun --nnodes=1 --nproc_per_node=3 debug_multi_torch_rank.py \
+       --fail_ranks 2 --breakpoint_mode before_error
+
+  4. Step-by-step debugging with multiple breakpoints:
+     export IPDB_DEBUG=1
+     torchrun --nnodes=1 --nproc_per_node=2 debug_multi_torch_rank.py \
+       --step_debug --breakpoint_ranks 0 1
+
+  5. Debug all stages with specific ranks:
+     export IPDB_DEBUG=1
+     torchrun --nnodes=1 --nproc_per_node=3 debug_multi_torch_rank.py \
+       --breakpoint_ranks 0 2 --breakpoint_mode all
+
+Socket-based Debugging:
   # Specify debug mode (console, web, socket):
   export IPDB_MODE=socket
-  torchrun --nnodes=1 --nproc_per_node=3 debug_multi_torch_rank.py --fail_ranks 0,2
+  torchrun --nnodes=1 --nproc_per_node=3 debug_multi_torch_rank.py \
+    --fail_ranks 0,2 --breakpoint_ranks 1 --breakpoint_mode before_error
   
-  # Socket-based debugging:
   # Connect to the socket debugger:
-  # socat - UNIX-CONNECT:/tmp/pdb.sock.1
+  # socat $(tty),raw,echo=0 UNIX-CONNECT:/tmp/pdb.sock.1
   
   # For better terminal support with arrow keys:
   # Use stty first to set your terminal to raw mode:
   #   stty raw -echo
-  #   socat - UNIX-CONNECT:/tmp/pdb.sock.1
+  #   socat $(tty),raw,echo=0 UNIX-CONNECT:/tmp/pdb.sock.1
   #   # When done: stty sane
   # 
   # Or use rlwrap for readline support (recommended):
-  #   rlwrap socat - UNIX-CONNECT:/tmp/pdb.sock.1
-  #
-  # Use the provided helper script (recommended):
-  #   ./scripts/debug_socket.sh --rank 1 --rlwrap
-  
-  # Socket debugging commands:
+  #   rlwrap socat $(tty),raw,echo=0 UNIX-CONNECT:/tmp/pdb.sock.1
+
+Programmatic Breakpoint Usage in Code:
+
+  from py3_tools.py_debug import breakpoint
+
+  # Debug all ranks at current location
+  breakpoint()
+
+  # Debug specific ranks only
+  breakpoint(ranks=[0, 2])
+
+  # Debug single rank
+  breakpoint(ranks=1)
+
+  # Conditional debugging based on rank
+  if dist.get_rank() in [0, 1]:
+      breakpoint(ranks=[dist.get_rank()])
+
+Advanced Examples:
+
+  # Debug with custom socket configuration:
+  export IPDB_MODE=socket
+  export IPDB_CONNECTION_TYPE=tcp
+  export IPDB_HOST=0.0.0.0
+  export IPDB_PORT=5678
+  torchrun --nnodes=1 --nproc_per_node=2 debug_multi_torch_rank.py \
+    --breakpoint_ranks 1 --debug
+
+  # Then connect with: socat $(tty),raw,echo=0 TCP:localhost:5679  # port = 5678 + rank
+
+  # Debug with web interface:
+  export IPDB_MODE=web
+  torchrun --nnodes=1 --nproc_per_node=2 debug_multi_torch_rank.py \
+    --breakpoint_ranks 1 --debug
+  # Open http://localhost:4445 in browser (port = 4444 + rank)
+
+Command-line Arguments:
+  --fail_ranks RANK [RANK ...]     Which ranks should throw an error (default: [1])
+  --breakpoint_ranks RANK [RANK ...] Which ranks should trigger breakpoints
+  --breakpoint_mode {before_error,after_tensor,before_allreduce,all}
+                                   When to trigger breakpoints (default: before_error)
+  --step_debug                     Enable step-by-step debugging with multiple breakpoints
+  --debug                          Enable debugging manually
+  --debug_mode {console,web,socket} Debug mode (overrides environment variable)
+  --error_type {indexerror,zerodivision,runtime}
+                                   Type of error to trigger (default: indexerror)
+  --backend BACKEND                PyTorch distributed backend (nccl or gloo)
+  --log_level {DEBUG,INFO,WARNING,ERROR,CRITICAL}
+                                   Set logging level (default: INFO)
+  --timeout SECONDS                Timeout for distributed operations (default: 600)
+
+Socket Debugging Commands:
   # - h or help: Show help
   # - n or next: Execute next line (step over)
   # - s or step: Step into function
@@ -45,12 +120,6 @@ Usage:
   # - p expression: Print value of expression
   # - pp expression: Pretty-print expression
   # - !command: Execute Python command
-  
-  # Set logging level:
-  torchrun --nnodes=1 --nproc_per_node=2 debug_multi_torch_rank.py --fail_ranks 1 --log_level DEBUG
-  
-  # Specify custom timeout for distributed operations:
-  torchrun --nnodes=1 --nproc_per_node=2 debug_multi_torch_rank.py --timeout 1800
 """
 
 import os
@@ -60,7 +129,9 @@ import logging
 import datetime  # Add this import for timedelta
 import torch
 import torch.distributed as dist
-from py3_tools.py_debug.debug_utils import Debugger, setup_logging, breakpoint
+from py3_tools.py_debug.debug_utils import setup_logging
+from py3_tools.py_debug import Debugger, breakpoint
+
 
 # Get module logger
 logger = logging.getLogger(__name__)
@@ -81,6 +152,15 @@ def main():
                        default='INFO', help='Set logging level')
     parser.add_argument('--timeout', type=int, default=600,
                        help='Timeout in seconds for distributed operations (default: 10 minutes)')
+    
+    # Add breakpoint-related arguments
+    parser.add_argument('--breakpoint_ranks', type=int, nargs='+', default=None,
+                       help='Which ranks should trigger breakpoints (e.g., --breakpoint_ranks 0 1)')
+    parser.add_argument('--breakpoint_mode', choices=['before_error', 'after_tensor', 'before_allreduce', 'all'], 
+                       default='before_error', help='When to trigger breakpoints')
+    parser.add_argument('--step_debug', action='store_true',
+                       help='Enable step-by-step debugging with multiple breakpoints')
+    
     args = parser.parse_args()
 
     # Initialize the distributed environment (torchrun should have set the env variables)
@@ -127,11 +207,35 @@ def main():
         # All ranks log their tensor
         logger.debug(f"Created tensor: {tensor}")
         
-        breakpoint(ranks=[0,1])
+        # Breakpoint example 1: Debug specific ranks after tensor creation
+        if args.breakpoint_mode in ['after_tensor', 'all'] and args.breakpoint_ranks:
+            logger.info(f"Setting breakpoint after tensor creation for ranks: {args.breakpoint_ranks}")
+            breakpoint(ranks=args.breakpoint_ranks)
+            
+            a = 1
+            
+            breakpoint(ranks=args.breakpoint_ranks)
+            
+            b = 2
         
         # Synchronize all processes
         logger.debug("Synchronizing processes with barrier()")
         dist.barrier()
+        
+        # Breakpoint example 2: Debug before all_reduce operation
+        if args.breakpoint_mode in ['before_allreduce', 'all'] and args.breakpoint_ranks:
+            logger.info(f"Setting breakpoint before all_reduce for ranks: {args.breakpoint_ranks}")
+            breakpoint(ranks=args.breakpoint_ranks)
+        
+        # Perform a collective operation
+        logger.debug("Performing all_reduce operation")
+        dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+        logger.info(f"After all_reduce: {tensor}")
+        
+        # Breakpoint example 3: Debug before error (if this rank will fail)
+        if args.breakpoint_mode in ['before_error', 'all'] and rank in args.fail_ranks:
+            logger.warning(f"Setting breakpoint before error on rank {rank}")
+            breakpoint(ranks=[rank])  # Only debug the rank that will fail
         
         # The specified ranks will throw an error
         if rank in args.fail_ranks:
@@ -149,13 +253,34 @@ def main():
                 # Generate a runtime error
                 logger.debug("Raising RuntimeError")
                 raise RuntimeError(f"Simulated error on rank {rank}")
-            
-        # Perform a collective operation
-        logger.debug("Performing all_reduce operation")
-        dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
-        logger.info(f"After all_reduce: {tensor}")
         
         return tensor
+
+    # Step-by-step debugging example
+    def step_debug_example():
+        """Demonstrates step-by-step debugging across multiple operations."""
+        logger.info("Starting step-by-step debugging example")
+        
+        # Step 1: Initial tensor creation
+        logger.debug("Step 1: Creating initial tensor")
+        x = torch.randn(5) + rank
+        breakpoint(ranks=args.breakpoint_ranks or [0, 1])
+        
+        # Step 2: Tensor transformation
+        logger.debug("Step 2: Transforming tensor")
+        y = x * 2 + 1
+        if args.step_debug:
+            breakpoint(ranks=args.breakpoint_ranks or [rank])
+        
+        # Step 3: Distributed operation
+        logger.debug("Step 3: All-gather operation")
+        gathered = [torch.zeros_like(y) for _ in range(world_size)]
+        dist.all_gather(gathered, y)
+        if args.step_debug:
+            breakpoint(ranks=args.breakpoint_ranks or [0])
+        
+        logger.info(f"Step debug completed on rank {rank}")
+        return gathered
 
     logger.debug("Starting first tensor operation")
     try:
@@ -173,6 +298,16 @@ def main():
     except Exception as e:
         logger.error(f"Error caught: {e}")
         raise
+    
+    # Run step debugging if requested
+    if args.step_debug:
+        logger.info("Running step-by-step debugging example")
+        try:
+            step_result = step_debug_example()
+            logger.info("Step debugging completed successfully")
+        except Exception as e:
+            logger.error(f"Error during step debugging: {e}")
+            raise
     # finally:
     #     # Clean up
     #     logger.debug("Destroying process group")

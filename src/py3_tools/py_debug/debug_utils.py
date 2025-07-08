@@ -408,7 +408,46 @@ class Debugger:
         
         Args:
             ranks (list, int, optional): List of ranks or single rank to activate debugger on.
-                                         If None, activates on all ranks.
+                                         If None, activates on current rank only.
+                                         
+        Examples:
+            # Debug all ranks (current rank only if not in distributed mode)
+            breakpoint()
+            
+            # Debug specific ranks
+            breakpoint(ranks=[0, 2])
+            
+            # Debug single rank
+            breakpoint(ranks=1)
+            
+            # Conditional debugging
+            if some_condition:
+                breakpoint(ranks=[dist.get_rank()])
+                
+            # Debug in distributed training loop
+            for epoch in range(num_epochs):
+                if epoch == 5:  # Debug at specific epoch
+                    breakpoint(ranks=[0, 1])  # Debug first two ranks
+                train_step()
+                
+        Usage in multi-process environments:
+        
+            # In torchrun script with 4 processes:
+            export IPDB_DEBUG=1
+            export IPDB_MODE=socket
+            
+            # This will create socket debuggers for ranks 1 and 3
+            breakpoint(ranks=[1, 3])
+            
+            # Connect from separate terminals:
+            # Terminal 1: socat $(tty),raw,echo=0 UNIX-CONNECT:/tmp/pdb.sock.1
+            # Terminal 2: socat $(tty),raw,echo=0 UNIX-CONNECT:/tmp/pdb.sock.3
+            
+        Note:
+            - Debugging is only activated if Debugger.debug_flag is True
+            - Set via environment variable: export IPDB_DEBUG=1
+            - Or manually: Debugger.debug_flag = True
+            - Ranks not in the list will continue execution normally
         """
         # Skip if debugging is not enabled
         if not Debugger.debug_flag:

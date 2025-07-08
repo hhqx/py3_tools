@@ -22,6 +22,14 @@ class ConnectionType(enum.Enum):
     TCP = "tcp"
     UNIX = "unix"
 
+def get_rank() -> int:
+    # Get rank from environment variable, default to -1 if not found or invalid
+    try:
+        rank = int(os.environ.get('RANK', '-1'))
+    except ValueError:
+        logger.warning("Invalid RANK environment variable, defaulting to -1")
+        rank = -1
+    return rank
 
 class CustomSocketPdb:
     """
@@ -80,6 +88,8 @@ class CustomSocketPdb:
         self.orig_stdin = sys.stdin
         self.orig_stdout = sys.stdout
         self.orig_stderr = sys.stderr
+        
+        self.connect_command = None
 
     def start(self) -> None:
         """Start the socket server and set up the debugging environment."""
@@ -128,7 +138,39 @@ class CustomSocketPdb:
             self.server.listen(1)
             
             logger.info(f"[*] Remote debugger waiting for TCP connection at {self.host}:{self.port}")
-            logger.info(f"[*] Connect with: socat $(tty),raw,echo=0 TCP:{self.host}:{self.port}")
+            
+            rank = get_rank()
+                
+            # Create a visually appealing box with connection instructions
+            connect_cmd = f"socat $(tty),raw,echo=0 TCP:{self.host}:{self.port}"
+            title = "DEBUGGER READY - CONNECTION INSTRUCTIONS"
+            if rank >=0:
+                title = f"RANK {rank}: {title}"
+            logger.info(f"[rank={rank}] Connect Debugger with: '{connect_cmd}'")
+            
+            # Calculate box width based on the longest content (without ANSI codes)
+            box_width = max(len(connect_cmd), len(title)) + 4  # +4 for padding
+            
+            # Create highlighted command with ANSI codes
+            highlighted_cmd = f"\033[1m\033[32m{connect_cmd}\033[0m"
+            highlighted_title = f"\033[1m\033[33m{title}\033[0m"
+            
+            # Create the colorful box with connection instructions
+            box = [
+                f"\033[1m\033[34m{'╔' + '═' * (box_width-2) + '╗'}\033[0m",
+                f"\033[1m\033[34m║\033[0m{highlighted_title.center(box_width-2+len(highlighted_title)-len(title))}\033[1m\033[34m║\033[0m",
+                f"\033[1m\033[34m╟{'─' * (box_width-2)}╢\033[0m",
+                f"\033[1m\033[34m║\033[0m{highlighted_cmd.center(box_width-2+len(highlighted_cmd)-len(connect_cmd))}\033[1m\033[34m║\033[0m",
+                f"\033[1m\033[34m{'╚' + '═' * (box_width-2) + '╝'}\033[0m"
+            ]
+            
+            # Print the box
+            for line in box:
+                # logger.info(line)
+                print(line)  # Print to stdout as well
+            
+            # Store the connection command for reference
+            self.connect_command = connect_cmd
         except OSError as e:
             raise OSError(f"Failed to bind to {self.host}:{self.port}: {e}")
     
@@ -154,7 +196,39 @@ class CustomSocketPdb:
                 logger.warning(f"Could not change permissions of {self.unix_socket_path}")
             
             logger.info(f"[*] Remote debugger waiting for UNIX socket connection at {self.unix_socket_path}")
-            logger.info(f"[*] Connect with: socat $(tty),raw,echo=0 UNIX-CONNECT:{self.unix_socket_path}")
+            
+            rank = get_rank()
+                
+            # Create a visually appealing box with connection instructions
+            connect_cmd = f"socat $(tty),raw,echo=0 UNIX-CONNECT:{self.unix_socket_path}"
+            title = "DEBUGGER READY - CONNECTION INSTRUCTIONS"
+            if rank >= 0:
+                title = f"RANK {rank}: {title}"
+            
+            logger.info(f"[rank={rank}] Connect Debugger with: '{connect_cmd}'")
+            
+            # Calculate box width based on the longest content (without ANSI codes)
+            box_width = max(len(connect_cmd), len(title)) + 4  # +4 for padding
+            
+            # Create highlighted command with ANSI codes
+            highlighted_cmd = f"\033[1m\033[32m{connect_cmd}\033[0m"
+            highlighted_title = f"\033[1m\033[33m{title}\033[0m"
+            
+            # Create the colorful box with connection instructions
+            box = [
+                f"\033[1m\033[34m{'╔' + '═' * (box_width-2) + '╗'}\033[0m",
+                f"\033[1m\033[34m║\033[0m{highlighted_title.center(box_width-2+len(highlighted_title)-len(title))}\033[1m\033[34m║\033[0m",
+                f"\033[1m\033[34m╟{'─' * (box_width-2)}╢\033[0m",
+                f"\033[1m\033[34m║\033[0m{highlighted_cmd.center(box_width-2+len(highlighted_cmd)-len(connect_cmd))}\033[1m\033[34m║\033[0m",
+                f"\033[1m\033[34m{'╚' + '═' * (box_width-2) + '╝'}\033[0m"
+            ]
+            
+            # Print the box
+            for line in box:
+                # logger.info(line)
+                print(line)
+            
+            self.connect_command = connect_cmd
         except OSError as e:
             raise OSError(f"Failed to bind to {self.unix_socket_path}: {e}")
 
