@@ -18,8 +18,33 @@ Usage:
   export IPDB_MODE=socket
   torchrun --nnodes=1 --nproc_per_node=3 debug_multi_torch_rank.py --fail_ranks 0,2
   
-  # In another terminal when using socket mode:
-  # nc -U /tmp/pdb.sock.2
+  # Socket-based debugging:
+  # Connect to the socket debugger:
+  # socat - UNIX-CONNECT:/tmp/pdb.sock.1
+  
+  # For better terminal support with arrow keys:
+  # Use stty first to set your terminal to raw mode:
+  #   stty raw -echo
+  #   socat - UNIX-CONNECT:/tmp/pdb.sock.1
+  #   # When done: stty sane
+  # 
+  # Or use rlwrap for readline support (recommended):
+  #   rlwrap socat - UNIX-CONNECT:/tmp/pdb.sock.1
+  #
+  # Use the provided helper script (recommended):
+  #   ./scripts/debug_socket.sh --rank 1 --rlwrap
+  
+  # Socket debugging commands:
+  # - h or help: Show help
+  # - n or next: Execute next line (step over)
+  # - s or step: Step into function
+  # - c or continue: Continue execution
+  # - q or quit: Quit debugger
+  # - l or list: Show current line in context
+  # - w or where: Show call stack
+  # - p expression: Print value of expression
+  # - pp expression: Pretty-print expression
+  # - !command: Execute Python command
   
   # Set logging level:
   torchrun --nnodes=1 --nproc_per_node=2 debug_multi_torch_rank.py --fail_ranks 1 --log_level DEBUG
@@ -35,7 +60,7 @@ import logging
 import datetime  # Add this import for timedelta
 import torch
 import torch.distributed as dist
-from py3_tools.py_debug.debug_utils import Debugger, setup_logging
+from py3_tools.py_debug.debug_utils import Debugger, setup_logging, breakpoint
 
 # Get module logger
 logger = logging.getLogger(__name__)
@@ -101,6 +126,8 @@ def main():
         
         # All ranks log their tensor
         logger.debug(f"Created tensor: {tensor}")
+        
+        breakpoint(ranks=[0,1])
         
         # Synchronize all processes
         logger.debug("Synchronizing processes with barrier()")

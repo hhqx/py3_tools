@@ -11,7 +11,7 @@ Features:
 - **Communication backends**:
   - **NCCL**: high-performance GPU collectives on NVIDIA hardware.
   - **Gloo**: CPU and GPU-capable fallback backend.
-- **Socket-based debugging**: supports remote debugging through Unix sockets.
+- **Socket-based debugging**: supports remote debugging through Unix and TCP sockets.
 
 Usage Examples:
 
@@ -39,7 +39,7 @@ Usage Examples:
     export IPDB_DEBUG=1
     export IPDB_MODE=socket
     torchrun --nnodes=1 --nproc_per_node=2 debug_multi_torch_rank.py --fail_ranks 1
-    # In another terminal: socat - UNIX-CONNECT:/tmp/pdb.sock.1
+    # In another terminal: socat $(tty),raw,echo=0 UNIX-CONNECT:/tmp/pdb.sock.1
 
 Command-line Options:
     --mode [hello|error|distributed_error]
@@ -56,6 +56,9 @@ import sys
 import pdb
 import logging
 import socket
+import enum
+import tempfile
+from typing import Optional, Union, Callable, Any, Dict, TextIO
 
 # Distributed support
 try:
@@ -79,7 +82,20 @@ logger = logging.getLogger(__name__)
 # Socket-based debugging configuration
 SOCK_PATH = '/tmp/pdb.sock'
 
-__all__ = ['Debugger', 'setup_logging', 'CustomPdb', 'set_trace', 'breakpoint']
+__all__ = ['Debugger', 'setup_logging', 'CustomPdb', 'set_trace', 'breakpoint', 
+           'ConnectionType', 'CustomSocketPdb']
+
+# Import socket debugging classes if available
+try:
+    from py3_tools.py_debug.socket.socket_class import CustomSocketPdb, ConnectionType, socket_set_trace, socket_post_mortem
+    _socket_debugger_available = True
+except ImportError:
+    _socket_debugger_available = False
+    # Define placeholder classes if import fails
+    class ConnectionType(enum.Enum):
+        """Connection types for remote debugging."""
+        TCP = "tcp"
+        UNIX = "unix"
 
 def setup_logging(level=logging.INFO, rank=None):
     """Configure logging with appropriate format and level.
@@ -179,6 +195,12 @@ class Debugger:
     elif debug_mode not in ('console', 'web', 'socket'):
         raise ValueError(f"Invalid debug mode: {debug_mode}. Must be one of 'console', 'web', or 'socket'.")
     
+    # Socket debug configuration
+    socket_connection_type = ConnectionType.UNIX if os.getenv('IPDB_CONNECTION_TYPE', '').lower() != 'tcp' else ConnectionType.TCP
+    socket_host = os.getenv('IPDB_HOST', 'localhost')
+    socket_port = int(os.getenv('IPDB_PORT', base_port))
+    socket_path = os.getenv('IPDB_SOCKET_PATH', None)
+    
     @staticmethod
     def _deep_tb():
         """Return the deepest (innermost) frame and traceback."""
@@ -229,14 +251,38 @@ class Debugger:
             return
             
         if Debugger.debug_mode == 'socket':
-            # Use socket-based debugging
+            # Use CustomSocketPdb for socket-based debugging
             logger.info(f"Starting socket-based debugging for rank {rank}...")
-            
             logger.error(f"Error occurred at [rank:{rank}]: '{cls.exception.__class__.__name__}({cls.exception})'")
-            param, socket_path = get_socket_pdb_params(rank=rank)
-            p = pdb.Pdb(**param)
-            logger.info(f"Connection established on {socket_path}")
-            p.prompt = f'(rank-{rank}-pdb) '
+            
+            if _socket_debugger_available:
+                # Use CustomSocketPdb with proper socket configuration
+                if cls.socket_connection_type == ConnectionType.UNIX:
+                    socket_path = cls.socket_path or f"{SOCK_PATH}.{rank}"
+                    logger.info(f"Using CustomSocketPdb with Unix socket at {socket_path}")
+                    socket_post_mortem(
+                        tb=tb,
+                        connection_type=ConnectionType.UNIX,
+                        unix_socket_path=socket_path
+                    )
+                else:
+                    port = cls.socket_port + rank  # Adjust port by rank
+                    logger.info(f"Using CustomSocketPdb with TCP at {cls.socket_host}:{port}")
+                    socket_post_mortem(
+                        tb=tb,
+                        connection_type=ConnectionType.TCP,
+                        host=cls.socket_host,
+                        port=port
+                    )
+            else:
+                # Fall back to original socket approach if CustomSocketPdb not available
+                logger.warning("CustomSocketPdb not available, falling back to original socket method")
+                param, socket_path = get_socket_pdb_params(rank=rank)
+                p = pdb.Pdb(**param)
+                logger.info(f"Connection established on {socket_path}")
+                p.prompt = f'(rank-{rank}-pdb) '
+                p.reset()
+                p.interaction(frame, tb)
         else:
             # Use standard console debugging
             p = pdb.Pdb()
@@ -245,9 +291,47 @@ class Debugger:
                 logger.warning(f"Rank {rank} has blocked execution for debugging.")
                 while True:
                     pass
+            p.reset()
+            p.interaction(frame, tb)
+
+    @classmethod
+    def remote_post_mortem(cls, rank=0):
+        """
+        Start a remote debugging session.
+        
+        Args:
+            rank (int): Process rank for distributed debugging
+        """
+        if not _socket_debugger_available:
+            logger.error("CustomSocketPdb not available. Falling back to console debugger.")
+            cls.blocking_console_post_mortem(rank=rank)
+            return
             
-        p.reset()
-        p.interaction(frame, tb)
+        frame, tb = Debugger._deep_tb()
+        if tb is None:
+            logger.error("No traceback to debug")
+            return
+        
+        # Configure socket debugger
+        if cls.socket_connection_type == ConnectionType.UNIX:
+            socket_path = cls.socket_path or f"{SOCK_PATH}.{rank}"
+            logger.info(f"Starting socket debugger with Unix socket at {socket_path}")
+            socket_post_mortem(
+                tb=tb,
+                connection_type=ConnectionType.UNIX,
+                unix_socket_path=socket_path
+            )
+        else:
+            port = cls.socket_port + rank  # Adjust port by rank
+            logger.info(f"Starting socket debugger with TCP at {cls.socket_host}:{port}")
+            socket_post_mortem(
+                tb=tb,
+                connection_type=ConnectionType.TCP,
+                host=cls.socket_host,
+                port=port
+            )
+            
+        logger.error(f"Error occurred at [rank:{rank}]: '{cls.exception.__class__.__name__}({cls.exception})'")
 
     @classmethod
     def attach_on_error(cls):
@@ -291,7 +375,7 @@ class Debugger:
                     
                     # Start appropriate debugger based on rank and debug mode
                     if process_rank == 0:
-                        # Primary process (rank 0) always uses console debugger
+                        # Primary process (rank 0) uses console debugger by default
                         logger.info("Entering ipdb post_mortem debugger...")
                         ipdb.post_mortem()
                     else:
@@ -305,10 +389,6 @@ class Debugger:
                             cls.blocking_console_post_mortem(rank=process_rank)
                         else:
                             cls.blocking_console_post_mortem(rank=process_rank)
-                            # # Default fallback to web post-mortem for non-primary ranks
-                            # debugger_port = cls.base_port + process_rank
-                            # logger.info(f"Rank {process_rank} entering web debugger (fallback) on port {debugger_port}")
-                            # cls.web_post_mortem(port=debugger_port)
                     
                     # Re-raise the exception after debugging session ends
                     raise
@@ -368,13 +448,36 @@ class Debugger:
             debugger = WebPdb(port=port)
             debugger.set_trace(frame=frame)
         elif Debugger.debug_mode == 'socket':
-            # Use socket-based debugger
+            # Use CustomSocketPdb for socket-based debugging
             logger.info(f"Rank {current_rank}: Starting socket-based debugger")
-            param, socket_path = get_socket_pdb_params(rank=current_rank)
-            p = CustomPdb(**param)
-            p.prompt = f'(rank-{current_rank}-pdb) '
-            logger.info(f"Connection established on {socket_path}")
-            p.set_trace(frame=frame)
+            
+            if _socket_debugger_available:
+                # Use CustomSocketPdb with proper socket configuration
+                if Debugger.socket_connection_type == ConnectionType.UNIX:
+                    socket_path = Debugger.socket_path or f"{SOCK_PATH}.{current_rank}"
+                    logger.info(f"Using CustomSocketPdb with Unix socket at {socket_path}")
+                    socket_set_trace(
+                        frame=frame,
+                        connection_type=ConnectionType.UNIX,
+                        unix_socket_path=socket_path
+                    )
+                else:
+                    port = Debugger.socket_port + current_rank  # Adjust port by rank
+                    logger.info(f"Using CustomSocketPdb with TCP at {Debugger.socket_host}:{port}")
+                    socket_set_trace(
+                        frame=frame,
+                        connection_type=ConnectionType.TCP,
+                        host=Debugger.socket_host,
+                        port=port
+                    )
+            else:
+                # Fall back to original socket approach if CustomSocketPdb not available
+                logger.warning("CustomSocketPdb not available, falling back to original socket method")
+                param, socket_path = get_socket_pdb_params(rank=current_rank)
+                p = CustomPdb(**param)
+                p.prompt = f'(rank-{current_rank}-pdb) '
+                logger.info(f"Connection established on {socket_path}")
+                p.set_trace(frame=frame)
         else:
             # Fallback to standard pdb
             logger.info(f"Rank {current_rank}: Using standard pdb")
