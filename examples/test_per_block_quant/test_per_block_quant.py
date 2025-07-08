@@ -1,6 +1,13 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import logging
+from copy import deepcopy
+from typing import Tuple, Union
+
+# Configure logger
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+logger = logging.getLogger(__name__)
 
 
 class SimpleModel(nn.Module):
@@ -19,11 +26,20 @@ class SimpleModel(nn.Module):
 
 class LinearPerBlockQuant(nn.Module):
     """Linear layer with per-block quantization capabilities."""
-    def __init__(self, original_layer, block_size=4, w_bits=8, a_bits=8):
+    def __init__(self, original_layer, block_size: Union[int, Tuple[int, int]]=4, 
+                 w_bits=8, a_bits=8):
         super(LinearPerBlockQuant, self).__init__()
         self.in_features = original_layer.in_features
         self.out_features = original_layer.out_features
-        self.block_size = block_size
+        
+        # Handle block_size as either int or tuple
+        if isinstance(block_size, int):
+            self.out_block_size = block_size
+            self.in_block_size = block_size
+        elif isinstance(block_size, tuple) and len(block_size) == 2:
+            self.out_block_size, self.in_block_size = block_size
+        else:
+            raise ValueError("block_size must be an int or a tuple of two integers")
         
         # Copy parameters from original layer
         self.weight = nn.Parameter(original_layer.weight.clone())
@@ -38,9 +54,17 @@ class LinearPerBlockQuant(nn.Module):
         self.mode = 'float'  # 'float', 'fake_quant', 'calibration'
         
         # Calculate number of blocks in each dimension
-        self.num_blocks_in_fea = (self.in_features + block_size - 1) // block_size
-        self.num_blocks_out_fea = (self.out_features + block_size - 1) // block_size
-              
+        self.num_blocks_in_fea = (self.in_features + self.in_block_size - 1) // self.in_block_size
+        self.num_blocks_out_fea = (self.out_features + self.out_block_size - 1) // self.out_block_size
+        
+        # Check if dimensions are evenly divisible by block sizes
+        if self.in_features % self.in_block_size != 0:
+            logger.warning(f"Input features ({self.in_features}) not evenly divisible "
+                          f"by in_block_size ({self.in_block_size})")
+        if self.out_features % self.out_block_size != 0:
+            logger.warning(f"Output features ({self.out_features}) not evenly divisible "
+                          f"by out_block_size ({self.out_block_size})")
+        
         # Quantization parameters for weights and activations (per block)
         self.register_buffer('w_scales', torch.ones(self.out_features, self.num_blocks_in_fea))
         self.register_buffer('w_zeros', torch.zeros(self.out_features, self.num_blocks_in_fea))
@@ -59,8 +83,8 @@ class LinearPerBlockQuant(nn.Module):
         for out_idx in range(self.out_features):
             # Process each block within this row
             for block_idx in range(self.num_blocks_in_fea):
-                start_idx = block_idx * self.block_size
-                end_idx = min(start_idx + self.block_size, self.in_features)
+                start_idx = block_idx * self.in_block_size
+                end_idx = min(start_idx + self.in_block_size, self.in_features)
                 
                 # Extract the block
                 block = self.weight[out_idx, start_idx:end_idx]
@@ -88,8 +112,8 @@ class LinearPerBlockQuant(nn.Module):
         
         # Process each block of activations
         for block_idx in range(self.num_blocks_in_fea):
-            start_idx = block_idx * self.block_size
-            end_idx = min(start_idx + self.block_size, self.in_features)
+            start_idx = block_idx * self.in_block_size
+            end_idx = min(start_idx + self.in_block_size, self.in_features)
             
             # Extract block across all batch samples
             block = x[:, start_idx:end_idx]
@@ -120,8 +144,8 @@ class LinearPerBlockQuant(nn.Module):
         for out_idx in range(self.out_features):
             # Process each block within this row
             for block_idx in range(self.num_blocks_in_fea):
-                start_idx = block_idx * self.block_size
-                end_idx = min(start_idx + self.block_size, self.in_features)
+                start_idx = block_idx * self.in_block_size
+                end_idx = min(start_idx + self.in_block_size, self.in_features)
                 
                 # Extract the block
                 block = self.weight[out_idx, start_idx:end_idx]
@@ -148,8 +172,8 @@ class LinearPerBlockQuant(nn.Module):
         
         # Process each block
         for block_idx in range(self.num_blocks_in_fea):
-            start_idx = block_idx * self.block_size
-            end_idx = min(start_idx + self.block_size, self.in_features)
+            start_idx = block_idx * self.in_block_size
+            end_idx = min(start_idx + self.in_block_size, self.in_features)
             
             # Extract block
             block = x[:, start_idx:end_idx]
@@ -241,14 +265,17 @@ class PerBlockQuantizer:
         
         return model
 
-
-from copy import deepcopy
-def test_quantization_accuracy():
-    """Test the accuracy difference between float and quantized models."""
-    # Create model and sample data
+def get_model_input():
+    torch.manual_seed(1234)
     model = SimpleModel(input_dim=8, hidden_dim=32, output_dim=8)
     batch_size = 10
     inputs = torch.randn(batch_size, 8)
+    return model, inputs
+
+def test_quantization_accuracy():
+    """Test the accuracy difference between float and quantized models."""
+    # Create model and sample data
+    model, inputs = get_model_input()
     
     # Get reference outputs from float model
     model.eval()
@@ -295,6 +322,115 @@ def test_quantization_accuracy():
     }
 
 
+def test_different_block_sizes():
+    """Test different block size configurations."""
+    print("\nTesting different block sizes...")
+    
+    # Create model and sample data
+    model, inputs = get_model_input()
+    
+    # Get reference outputs from float model
+    model.eval()
+    with torch.no_grad():
+        float_outputs = model(inputs)
+    
+    # Test with tuple block_size
+    print("Testing with block_size=(2, 4)...")
+    quantizer_diff = PerBlockQuantizer(block_size=(2, 4), w_bits=8, a_bits=8)
+    
+    # Need to update the quantize_model method to pass the tuple block_size
+    # This is a direct modification to handle tuple block_size
+    def _modified_quantize_model(model):
+        for name, module in list(model.named_children()):
+            if isinstance(module, nn.Linear):
+                # Create quantized layer with tuple block_size
+                quantized_layer = LinearPerBlockQuant(
+                    module, 
+                    block_size=quantizer_diff.block_size,
+                    w_bits=quantizer_diff.w_bits,
+                    a_bits=quantizer_diff.a_bits
+                )
+                # Replace original layer
+                setattr(model, name, quantized_layer)
+                quantizer_diff.quantized_layers.append(quantized_layer)
+            else:
+                # Recursively process child modules
+                _modified_quantize_model(module)
+        return model
+    
+    model_diff = _modified_quantize_model(deepcopy(model))
+    
+    # Calibrate the model
+    quantizer_diff.calibrate_model(model_diff, inputs)
+    
+    # Test in fake quant mode
+    quantizer_diff.set_mode('fake_quant')
+    with torch.no_grad():
+        quant_outputs_diff = model_diff(inputs)
+    
+    # Calculate MSE
+    mse_diff = F.mse_loss(float_outputs, quant_outputs_diff)
+    print(f"MSE for different block sizes: {mse_diff.item():.8f}")
+    
+    return {
+        'different_block_sizes_mse': mse_diff.item()
+    }
+
+
+def test_different_block_sizes():
+    """Test the accuracy difference between float and quantized models."""
+    print('\n\n', '-' * 50)
+    
+    # Create model and sample data
+    model, inputs = get_model_input()
+    
+    # Get reference outputs from float model
+    model.eval()
+    with torch.no_grad():
+        float_outputs = model(inputs)
+    
+    # Test w8a8 quantization
+    block_size = (2, 4)
+    quantizer_w8a8 = PerBlockQuantizer(block_size=block_size, w_bits=8, a_bits=8)
+    print(f"Testing w8a8-perblock quantization...  block_size={block_size}")
+    
+    model_w8a8 = quantizer_w8a8.quantize_model(deepcopy(model))
+    
+    # Calibrate the model
+    quantizer_w8a8.calibrate_model(model_w8a8, inputs)
+    
+    # Test in fake quant mode
+    quantizer_w8a8.set_mode('fake_quant')
+    with torch.no_grad():
+        quant_outputs_w8a8 = model_w8a8(inputs)
+    
+    # Calculate MSE
+    mse_w8a8 = F.mse_loss(float_outputs, quant_outputs_w8a8)
+    print(f"MSE for w8a8-perblock: {mse_w8a8.item():.8f}")
+    
+    # Test w8a16 quantization
+    print("\nTesting w8a16-perblock quantization...")
+    quantizer_w8a16 = PerBlockQuantizer(block_size=4, w_bits=8, a_bits=16)
+    model_w8a16 = quantizer_w8a16.quantize_model(deepcopy(model))
+    
+    # Calibrate the model
+    quantizer_w8a16.calibrate_model(model_w8a16, inputs)
+    
+    # Test in fake quant mode
+    quantizer_w8a16.set_mode('fake_quant')
+    with torch.no_grad():
+        quant_outputs_w8a16 = model_w8a16(inputs)
+    
+    # Calculate MSE
+    mse_w8a16 = F.mse_loss(float_outputs, quant_outputs_w8a16)
+    print(f"MSE for w8a16-perblock: {mse_w8a16.item():.8f}")
+    
+    return {
+        'w8a8_mse': mse_w8a8.item(),
+        'w8a16_mse': mse_w8a16.item()
+    }
+
 if __name__ == "__main__":
     results = test_quantization_accuracy()
+    diff_results = test_different_block_sizes()
     print("\nTest completed successfully!")
