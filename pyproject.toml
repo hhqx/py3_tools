@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "py3_tools_hqx"
-version = "1.2.0"
+version = "1.3.0"
 description = "Personal tools collection for various utilities"
 readme = "README.md"
 requires-python = ">=3.7"
@@ -23,6 +23,7 @@ classifiers = [
 dependencies = [
     "ipdb>=0.13.0",
     "web-pdb>=1.5.0",
+    "click"
 ]
 
 [project.urls]

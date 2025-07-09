@@ -494,14 +494,14 @@ class Debugger:
             return
             
         # Determine if this is the first rank in the list
-        is_first_rank = current_rank == ranks[0]
+        is_rank_0 = current_rank == 0
         
         # Get the frame where set_trace was called from (one level up)
         frame = sys._getframe().f_back
         
         logger.info(f"Setting trace on rank {current_rank}")
         
-        if is_first_rank:
+        if is_rank_0:
             # Use ipdb for the first rank
             logger.info(f"Rank {current_rank}: Using ipdb")
             ipdb.set_trace(frame=frame)

@@ -228,6 +228,7 @@ class CustomSocketPdb:
                 
             # Create a visually appealing box with connection instructions
             connect_cmd = f"socat $(tty),raw,echo=0 UNIX-CONNECT:{self.unix_socket_path}"
+            connect_cmd = f"python -m py3_tools.socat_unix --socket_path {self.unix_socket_path}"
             title = "DEBUGGER READY - CONNECTION INSTRUCTIONS"
             if rank >= 0:
                 title = f"RANK {rank}: {title}"
